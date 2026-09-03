@@ -148,7 +148,7 @@ fun ResizePhotoScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = ImagePlaceholderIcon,
+                                imageVector = Icons.Filled.ImagePlaceholderIcon,
                                 contentDescription = null,
                                 tint = OnBluePrimaryContainer
                             )
