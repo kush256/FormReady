@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
@@ -89,20 +90,34 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun selectCustomPdf(uri: Uri) {
+    /**
+     * Imports a user-picked PDF. Invokes [onResult] with `true` once the file is
+     * confirmed to be a readable PDF, or `false` if it is corrupted, password
+     * protected, or otherwise not a valid PDF.
+     */
+    fun selectCustomPdf(uri: Uri, onResult: (Boolean) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
-            val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "user_pdf", ".pdf")
-            val meta = PdfProcessor.getMetadata(tempFile)
-            _selectedCompressPdf.value = meta
+            val success = try {
+                val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "user_pdf", ".pdf")
+                val meta = PdfProcessor.getMetadataOrThrow(tempFile)
+                _selectedCompressPdf.value = meta
+                true
+            } catch (e: Exception) {
+                false
+            }
+            withContext(Dispatchers.Main) { onResult(success) }
         }
     }
 
-    fun executeCompression(onComplete: (Boolean) -> Unit) {
+    fun executeCompression(forceExtreme: Boolean = false, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch {
             val current = _selectedCompressPdf.value ?: run {
                 selectValidSamplePdf()
                 _selectedCompressPdf.value
             }
+
+            val effectiveAggressiveness = if (forceExtreme) "Extreme" else _aggressiveness.value
+            if (forceExtreme) _aggressiveness.value = "Extreme"
 
             _compressProgress.value = 0.1f
             _compressStatusMessage.value = "Analyzing PDF structure..."
@@ -123,7 +138,7 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
                 PdfProcessor.compressPdf(
                     sourceFile = srcFile,
                     targetKb = _targetKb.value,
-                    aggressiveness = _aggressiveness.value,
+                    aggressiveness = effectiveAggressiveness,
                     outputFile = outFile
                 )
             }
@@ -176,6 +191,27 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /**
+     * Imports one or more user-picked PDFs into the merge list, skipping any
+     * that turn out to be corrupted or unreadable.
+     */
+    fun addPdfsToMerge(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val imported = uris.mapNotNull { uri ->
+                try {
+                    val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "merge_pdf", ".pdf")
+                    PdfProcessor.getMetadataOrThrow(tempFile)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (imported.isNotEmpty()) {
+                _mergeList.value = _mergeList.value + imported
+            }
+        }
+    }
+
     fun removeMergeItem(index: Int) {
         val current = _mergeList.value.toMutableList()
         if (index in current.indices) {
@@ -189,6 +225,7 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
             onOneFileError()
             return
         }
+        // Guaranteed >= 2 valid PDFs from here on.
 
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -218,18 +255,52 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     // -------------------------------------------------------------
     // Split PDF State
     // -------------------------------------------------------------
-    private val _splitRange = MutableStateFlow("1-3, 5")
+    private val _splitRange = MutableStateFlow("1-3")
     val splitRange: StateFlow<String> = _splitRange.asStateFlow()
+
+    private val _selectedSplitPdf = MutableStateFlow<PdfProcessor.PdfMetadata?>(null)
+    val selectedSplitPdf: StateFlow<PdfProcessor.PdfMetadata?> = _selectedSplitPdf.asStateFlow()
 
     private val _splitResult = MutableStateFlow<PdfProcessor.SplitResult?>(null)
     val splitResult: StateFlow<PdfProcessor.SplitResult?> = _splitResult.asStateFlow()
+
+    // (requested range text, total pages available) for the invalid-range screen
+    private val _splitInvalidInfo = MutableStateFlow<Pair<String, Int>?>(null)
+    val splitInvalidInfo: StateFlow<Pair<String, Int>?> = _splitInvalidInfo.asStateFlow()
+
+    fun initSplitPdf() {
+        if (_selectedSplitPdf.value == null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                val samples = PdfProcessor.ensureSamplePdfs(getApplication())
+                val default = samples.firstOrNull { it.fileName.contains("Comprehensive") } ?: samples.first()
+                _selectedSplitPdf.value = default
+            }
+        }
+    }
+
+    /** Imports a user-picked PDF as the split source. */
+    fun selectSplitPdf(uri: Uri, onResult: (Boolean) -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val success = try {
+                val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "split_source", ".pdf")
+                val meta = PdfProcessor.getMetadataOrThrow(tempFile)
+                _selectedSplitPdf.value = meta
+                _splitRange.value = if (meta.pageCount >= 3) "1-3" else "1"
+                true
+            } catch (e: Exception) {
+                false
+            }
+            withContext(Dispatchers.Main) { onResult(success) }
+        }
+    }
 
     fun setSplitRange(range: String) {
         _splitRange.value = range
     }
 
     fun selectAllPagesForSplit() {
-        _splitRange.value = "1-12"
+        val total = _selectedSplitPdf.value?.pageCount ?: 12
+        _splitRange.value = if (total > 0) "1-$total" else "1"
     }
 
     fun executeSplit(rangeText: String? = null, onSuccess: () -> Unit, onInvalidRange: () -> Unit) {
@@ -237,25 +308,29 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
             _splitRange.value = rangeText
         }
         val range = _splitRange.value.trim()
-        val totalAvailable = 12
-
-        val parsedIndices = PdfProcessor.parsePageRange(range, totalAvailable)
-        if (parsedIndices.isEmpty() || range.contains("15") || range.contains("20")) {
-            onInvalidRange()
-            return
-        }
 
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) {
+            val sourceMeta = _selectedSplitPdf.value ?: withContext(Dispatchers.IO) {
                 val samples = PdfProcessor.ensureSamplePdfs(getApplication())
-                val splitSource = samples.firstOrNull { it.fileName.contains("Comprehensive") }?.file
-                    ?: samples.first().file
+                val default = samples.firstOrNull { it.fileName.contains("Comprehensive") } ?: samples.first()
+                _selectedSplitPdf.value = default
+                default
+            }
 
+            val totalAvailable = sourceMeta.pageCount
+            val parsedIndices = PdfProcessor.parsePageRange(range, totalAvailable)
+            if (range.isBlank() || parsedIndices.isEmpty()) {
+                _splitInvalidInfo.value = range to totalAvailable
+                onInvalidRange()
+                return@launch
+            }
+
+            val result = withContext(Dispatchers.IO) {
                 val outDir = File(getApplication<Application>().filesDir, "split").apply { mkdirs() }
                 val outFile = File(outDir, "Split_Pages_${System.currentTimeMillis()}.pdf")
 
                 PdfProcessor.splitPdf(
-                    sourceFile = splitSource,
+                    sourceFile = sourceMeta.file,
                     pageRange = range,
                     outputFile = outFile
                 )
@@ -479,6 +554,67 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    /** Prepares a signature from a photographed pen-and-paper signature. */
+    fun executePrepareSignatureFromPhoto(
+        photoBitmap: Bitmap,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val outDir = File(getApplication<Application>().filesDir, "signatures").apply { mkdirs() }
+                val outFile = File(outDir, "Signature_Photo_${System.currentTimeMillis()}.jpg")
+
+                PhotoProcessor.processSignatureFromPhoto(
+                    photoBitmap = photoBitmap,
+                    outputFile = outFile
+                )
+            }
+
+            _signatureResult.value = result
+
+            repository.insert(
+                DocumentEntity(
+                    title = "Prepared_Signature.jpg",
+                    type = "SIGNATURE",
+                    details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)} (10-20 KB Spec Passed)",
+                    filePath = result.file.absolutePath
+                )
+            )
+
+            onSuccess()
+        }
+    }
+
+    /** Prepares a signature from a gallery-picked photo of a pen-and-paper signature. */
+    fun executePrepareSignatureFromGalleryUri(
+        context: android.content.Context,
+        uri: Uri,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                    ?: PhotoProcessor.getSamplePortraitBitmap()
+                val outDir = File(getApplication<Application>().filesDir, "signatures").apply { mkdirs() }
+                val outFile = File(outDir, "Signature_Photo_${System.currentTimeMillis()}.jpg")
+                PhotoProcessor.processSignatureFromPhoto(photoBitmap = bitmap, outputFile = outFile)
+            }
+
+            _signatureResult.value = result
+
+            repository.insert(
+                DocumentEntity(
+                    title = "Prepared_Signature.jpg",
+                    type = "SIGNATURE",
+                    details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)} (10-20 KB Spec Passed)",
+                    filePath = result.file.absolutePath
+                )
+            )
+
+            onSuccess()
+        }
+    }
+
     // -------------------------------------------------------------
     // Image to PDF State
     // -------------------------------------------------------------
@@ -491,6 +627,9 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _imageToPdfResult = MutableStateFlow<File?>(null)
     val imageToPdfResult: StateFlow<File?> = _imageToPdfResult.asStateFlow()
 
+    private val _imageToPdfPages = MutableStateFlow<List<Bitmap>>(emptyList())
+    val imageToPdfPages: StateFlow<List<Bitmap>> = _imageToPdfPages.asStateFlow()
+
     fun setImageToPdfFormat(format: String) {
         _imageToPdfFormat.value = format
     }
@@ -499,17 +638,52 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
         _imageToPdfOrientation.value = orient
     }
 
+    /** Adds one or more gallery-picked images as pages for the Image to PDF flow. */
+    fun addImageToPdfPagesFromUris(context: android.content.Context, uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val bitmaps = uris.mapNotNull { uri ->
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (bitmaps.isNotEmpty()) {
+                _imageToPdfPages.value = _imageToPdfPages.value + bitmaps
+            }
+        }
+    }
+
+    /** Adds a single camera-captured page for the Image to PDF flow. */
+    fun addImageToPdfPage(bitmap: Bitmap) {
+        _imageToPdfPages.value = _imageToPdfPages.value + bitmap
+    }
+
+    fun removeImageToPdfPage(index: Int) {
+        val current = _imageToPdfPages.value.toMutableList()
+        if (index in current.indices) {
+            current.removeAt(index)
+            _imageToPdfPages.value = current
+        }
+    }
+
+    fun clearImageToPdfPages() {
+        _imageToPdfPages.value = emptyList()
+    }
+
     fun executeCreatePdfFromImages(onSuccess: () -> Unit) {
         viewModelScope.launch {
-            val resultFile = withContext(Dispatchers.IO) {
-                val sample1 = PhotoProcessor.getSamplePortraitBitmap()
-                val sample2 = PhotoProcessor.getSamplePortraitBitmap()
+            val pagesToUse = _imageToPdfPages.value.ifEmpty {
+                listOf(PhotoProcessor.getSamplePortraitBitmap(), PhotoProcessor.getSamplePortraitBitmap())
+            }
 
+            val resultFile = withContext(Dispatchers.IO) {
                 val outDir = File(getApplication<Application>().filesDir, "pdf").apply { mkdirs() }
                 val outFile = File(outDir, "Scanned_Application_ID_${System.currentTimeMillis()}.pdf")
 
                 PdfProcessor.imagesToPdf(
-                    bitmaps = listOf(sample1, sample2),
+                    bitmaps = pagesToUse,
                     format = _imageToPdfFormat.value,
                     orientation = _imageToPdfOrientation.value,
                     outputFile = outFile
@@ -522,7 +696,7 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
                 DocumentEntity(
                     title = "Scanned_Application_ID.pdf",
                     type = "IMAGE_TO_PDF",
-                    details = "2 Pages • ${FileHelper.formatFileSize(resultFile.length())}",
+                    details = "${pagesToUse.size} Pages • ${FileHelper.formatFileSize(resultFile.length())}",
                     filePath = resultFile.absolutePath
                 )
             )

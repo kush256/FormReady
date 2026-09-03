@@ -69,6 +69,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.CommonHeader
+import com.example.ui.components.rememberCameraCaptureLauncher
 import com.example.ui.theme.BluePrimary
 import com.example.ui.theme.BluePrimaryContainer
 import com.example.ui.theme.ErrorContainer
@@ -90,6 +91,17 @@ fun SignatureMakerScreen(
 ) {
     val points = remember { mutableStateListOf<Offset>() }
     var inkColor by remember { mutableStateOf(Color.Black) }
+
+    val cameraLauncher = rememberCameraCaptureLauncher(
+        onImageCaptured = { bitmap ->
+            if (viewModel != null) {
+                viewModel.executePrepareSignatureFromPhoto(bitmap, onSuccess = onPrepareSignature)
+            } else {
+                onPrepareSignature()
+            }
+        },
+        onPermissionDenied = onTakePhoto
+    )
 
     Column(
         modifier = modifier
@@ -198,7 +210,7 @@ fun SignatureMakerScreen(
 
                 // Take photo action button (matches //button[contains(normalize-space(), 'Take photo')])
                 OutlinedButton(
-                    onClick = onTakePhoto,
+                    onClick = cameraLauncher,
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.testTag("take_photo_button")
                 ) {
@@ -244,6 +256,7 @@ fun SignatureMakerScreen(
                         onPrepareSignature()
                     }
                 },
+                enabled = points.isNotEmpty(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier
@@ -276,8 +289,11 @@ fun SignatureCameraPermissionDeniedScreen(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri ->
             if (uri != null) {
-                viewModel?.loadInputBitmapFromUri(context, uri)
-                onChooseFromGallery()
+                if (viewModel != null) {
+                    viewModel.executePrepareSignatureFromGalleryUri(context, uri, onSuccess = onChooseFromGallery)
+                } else {
+                    onChooseFromGallery()
+                }
             }
         }
     )

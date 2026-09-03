@@ -22,5 +22,6 @@ enum class Screen(val title: String) {
     SIGNATURE_CAMERA_PERMISSION_DENIED("Signature Maker Camera Permission Denied"),
     SIGNATURE_RESULT("Refined Signature Result"),
     IMAGE_TO_PDF("Refined Image to PDF"),
-    IMAGE_TO_PDF_RESULT("Image to PDF Result")
+    IMAGE_TO_PDF_RESULT("Image to PDF Result"),
+    ABOUT("About & Privacy")
 }

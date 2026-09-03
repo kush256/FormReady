@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -75,6 +76,7 @@ import java.io.File
 @Composable
 fun HomeScreen(
     onNavigate: (Screen) -> Unit,
+    onAboutClick: () -> Unit = {},
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
@@ -130,18 +132,38 @@ fun HomeScreen(
                     )
                 }
 
-                Surface(
-                    shape = CircleShape,
-                    color = SuccessContainer,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = "Verified Portal Ready",
-                            tint = SuccessGreen,
-                            modifier = Modifier.size(20.dp)
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        shape = CircleShape,
+                        color = SuccessContainer,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Verified Portal Ready",
+                                tint = SuccessGreen,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clickable { onAboutClick() }
+                            .testTag("about_privacy_button")
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "About & Privacy",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -376,25 +398,6 @@ fun HomeScreen(
                                     modifier = Modifier.padding(top = 2.dp)
                                 )
                             }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Secondary trigger for Merge PDF One File Validation State
-                    OutlinedButton(
-                        onClick = { onNavigate(Screen.MERGE_PDF_ONE_FILE) },
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("tool_merge_pdf_single_file_test")
-                    ) {
-                        Box {
-                            Text(
-                                text = "Merge PDF (Test 1-File Validation)",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
                         }
                     }
                 }

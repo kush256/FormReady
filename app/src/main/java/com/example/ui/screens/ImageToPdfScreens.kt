@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,9 +21,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Share
@@ -30,6 +34,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -42,12 +47,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.CommonHeader
+import com.example.ui.components.rememberCameraCaptureLauncher
 import com.example.ui.theme.BluePrimary
 import com.example.ui.theme.BluePrimaryContainer
 import com.example.ui.theme.OnBluePrimaryContainer
@@ -64,12 +72,22 @@ fun ImageToPdfScreen(
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     var pageSize by remember { mutableStateOf("A4 Standard") }
     var orientation by remember { mutableStateOf("Portrait") }
 
-    val images = listOf(
-        Pair("1. front_id_scan.jpg", "1.4 MB  •  2400 x 1800 px"),
-        Pair("2. utility_bill_page2.jpg", "980 KB  •  2100 x 2970 px")
+    val pages by viewModel?.imageToPdfPages?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
+
+    val galleryPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel?.addImageToPdfPagesFromUris(context, uris)
+        }
+    }
+
+    val cameraLauncher = rememberCameraCaptureLauncher(
+        onImageCaptured = { bitmap -> viewModel?.addImageToPdfPage(bitmap) }
     )
 
     Column(
@@ -91,13 +109,13 @@ fun ImageToPdfScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Selected Scans (2 pages)",
+                text = "Selected Scans (${pages.size} page${if (pages.size == 1) "" else "s"})",
                 fontWeight = FontWeight.Bold,
                 fontSize = 15.sp,
                 color = MaterialTheme.colorScheme.onBackground
             )
 
-            images.forEach { (title, detail) ->
+            pages.forEachIndexed { index, bitmap ->
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -107,33 +125,73 @@ fun ImageToPdfScreen(
                         modifier = Modifier.padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
+                        Image(
+                            bitmap = bitmap.asImageBitmap(),
+                            contentDescription = "Page ${index + 1}",
+                            contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .size(40.dp)
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(BluePrimaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Image,
-                                contentDescription = null,
-                                tint = OnBluePrimaryContainer
-                            )
-                        }
+                        )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = title,
+                                text = "Page ${index + 1}",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp
                             )
                             Text(
-                                text = detail,
+                                text = "${bitmap.width} x ${bitmap.height} px",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        IconButton(onClick = { viewModel?.removeImageToPdfPage(index) }) {
+                            Icon(
+                                imageVector = Icons.Default.DeleteOutline,
+                                contentDescription = "Remove page ${index + 1}",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
+                }
+            }
+
+            if (pages.isEmpty()) {
+                Text(
+                    text = "No scans added yet — a sample 2-page document will be used until you add your own.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { galleryPicker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("add_images_from_gallery_button")
+                ) {
+                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Add from Gallery", fontSize = 13.sp)
+                }
+                OutlinedButton(
+                    onClick = cameraLauncher,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("add_page_from_camera_button")
+                ) {
+                    Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Scan with Camera", fontSize = 13.sp)
                 }
             }
 
@@ -222,9 +280,12 @@ fun ImageToPdfResultScreen(
 ) {
     val context = LocalContext.current
     val resultFile by viewModel?.imageToPdfResult?.collectAsState() ?: remember { mutableStateOf(null) }
+    val pages by viewModel?.imageToPdfPages?.collectAsState() ?: remember { mutableStateOf(emptyList()) }
+    val format by viewModel?.imageToPdfFormat?.collectAsState() ?: remember { mutableStateOf("A4 Standard") }
 
     val fileName = resultFile?.name ?: "Scanned_Application_ID.pdf"
     val fileSize = resultFile?.let { FileHelper.formatFileSize(it.length()) } ?: "320 KB"
+    val pageCountText = "${pages.size.coerceAtLeast(1)} Page${if (pages.size == 1) "" else "s"}"
 
     Column(
         modifier = modifier
@@ -318,11 +379,11 @@ fun ImageToPdfResultScreen(
                     ) {
                         Column {
                             Text(text = "Pages", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(text = "2 Pages", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Text(text = pageCountText, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                         Column {
                             Text(text = "Format", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(text = "A4 300 DPI", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                            Text(text = format, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         }
                         Column {
                             Text(text = "File Size", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -336,7 +397,10 @@ fun ImageToPdfResultScreen(
 
             // Action buttons (matches //button[contains(normalize-space(), 'Create another PDF')] and //button[contains(normalize-space(), 'Adjust PDF')])
             Button(
-                onClick = onCreateAnotherPdf,
+                onClick = {
+                    viewModel?.clearImageToPdfPages()
+                    onCreateAnotherPdf()
+                },
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier

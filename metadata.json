@@ -2,5 +2,5 @@
   "name": "FormReady",
   "description": "Prepare PDFs, photos, and signatures for official forms and applications.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

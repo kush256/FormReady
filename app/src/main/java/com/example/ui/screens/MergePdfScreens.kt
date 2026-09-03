@@ -49,10 +49,13 @@ import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.WarningAmber
 import com.example.ui.theme.WarningContainer
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.IconButton
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -67,21 +70,22 @@ import com.example.viewmodel.FormReadyViewModel
 fun MergePdfRefinedScreen(
     onBack: () -> Unit,
     onMergeSuccess: () -> Unit,
+    onOneFileError: () -> Unit = onMergeSuccess,
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
     val mergeItems by viewModel?.mergeList?.collectAsState() ?: remember { mutableStateOf<List<PdfProcessor.PdfMetadata>>(emptyList()) }
 
-    val displayFiles = if (mergeItems.isNotEmpty()) {
-        mergeItems.mapIndexed { idx, file ->
-            Triple("${idx + 1}. ${file.fileName}", "PDF Document", FileHelper.formatFileSize(file.sizeBytes))
+    LaunchedEffect(Unit) {
+        viewModel?.initMergeList()
+    }
+
+    val addPdfsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel?.addPdfsToMerge(uris)
         }
-    } else {
-        listOf(
-            Triple("1. National_ID_Front_Back.pdf", "2 pages", "480 KB"),
-            Triple("2. Degree_Certificate.pdf", "1 page", "320 KB"),
-            Triple("3. Address_Proof_Utility.pdf", "2 pages", "610 KB")
-        )
     }
 
     Column(
@@ -91,7 +95,7 @@ fun MergePdfRefinedScreen(
     ) {
         CommonHeader(
             title = "Merge PDFs",
-            subtitle = "${displayFiles.size} files ready to combine",
+            subtitle = "${mergeItems.size} files ready to combine",
             onBack = onBack
         )
 
@@ -115,7 +119,7 @@ fun MergePdfRefinedScreen(
             )
 
             // PDF list items
-            displayFiles.forEachIndexed { index, (name, pages, size) ->
+            mergeItems.forEachIndexed { index, file ->
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -148,19 +152,39 @@ fun MergePdfRefinedScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = name,
+                                text = "${index + 1}. ${file.fileName}",
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "$pages • $size",
+                                text = "${file.pageCount} pages • ${FileHelper.formatFileSize(file.sizeBytes)}",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        IconButton(onClick = { viewModel?.removeMergeItem(index) }) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Remove ${file.fileName}",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
+            }
+
+            OutlinedButton(
+                onClick = { addPdfsLauncher.launch(arrayOf("application/pdf")) },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("add_pdf_to_merge_button")
+            ) {
+                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Add PDF", fontSize = 14.sp)
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -171,7 +195,7 @@ fun MergePdfRefinedScreen(
                     if (viewModel != null) {
                         viewModel.executeMerge(
                             onSuccess = onMergeSuccess,
-                            onOneFileError = onMergeSuccess
+                            onOneFileError = onOneFileError
                         )
                     } else {
                         onMergeSuccess()
@@ -204,6 +228,18 @@ fun MergePdfOneFileScreen(
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
+    val mergeItems by viewModel?.mergeList?.collectAsState() ?: remember { mutableStateOf<List<PdfProcessor.PdfMetadata>>(emptyList()) }
+    val currentFile = mergeItems.firstOrNull()
+
+    val addPdfsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel?.addPdfsToMerge(uris)
+        }
+        onAddAnotherPdf()
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -281,7 +317,7 @@ fun MergePdfOneFileScreen(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "Single_Application_Form.pdf",
+                            text = currentFile?.fileName ?: "Single_Application_Form.pdf",
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 14.sp
                         )
@@ -298,7 +334,7 @@ fun MergePdfOneFileScreen(
 
             // Action button (matches xpath //button[contains(normalize-space(), 'Add another PDF')])
             Button(
-                onClick = onAddAnotherPdf,
+                onClick = { addPdfsLauncher.launch(arrayOf("application/pdf")) },
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier

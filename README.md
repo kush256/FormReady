@@ -1,22 +1,54 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# FormReady
 
-# Run and deploy your AI Studio app
+FormReady prepares PDFs, photos, and signatures for official forms and
+applications — compress, merge, and split PDFs; auto-fit biometric/passport
+photos; resize photos to exact dimensions; make a clean digital signature;
+and turn scans/photos into a PDF. Everything runs **entirely on-device**:
+there's no server, no account, and no analytics.
 
-This contains everything you need to run your app locally.
+## Run locally
 
-View your app in AI Studio: https://ai.studio/apps/daa082c8-df06-4252-85c3-7217502f35cc
+**Prerequisites:** [Android Studio](https://developer.android.com/studio)
+(Koala or newer), JDK 17+.
 
-## Run Locally
+1. Open Android Studio, choose **Open**, and select this project's directory.
+2. Let Android Studio sync Gradle (it will download the Gradle/AGP versions
+   pinned in `gradle/wrapper/gradle-wrapper.properties` and `gradle/libs.versions.toml`).
+3. Run the `app` configuration on an emulator or physical device (minSdk 24).
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+Debug builds sign with `debug.keystore` at the project root. If that file is
+missing, Android Studio (or `./gradlew`) will generate a fresh one
+automatically the first time you build.
 
+## Release builds
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
-7. If you have already published your app in AI Studio, please [request upload key reset](https://support.google.com/googleplay/android-developer/answer/9842756#zippy=%2Crequest-an-upload-key-reset) in Google Play Console.
+The `release` build type signs with an upload keystore supplied via
+environment variables (see `app/build.gradle.kts`):
+
+```
+KEYSTORE_PATH=/path/to/your-upload-key.jks
+STORE_PASSWORD=...
+KEY_PASSWORD=...
+```
+
+Generate an upload key with `keytool -genkeypair -v -keystore my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload`,
+then keep that keystore and its passwords somewhere safe — Google Play uses
+it to verify every future update to this app.
+
+## Project structure
+
+- `app/src/main/java/com/example/ui/screens` — one file per feature flow
+  (Compress/Merge/Split PDF, Smart Photo, Resize Photo, Signature Maker,
+  Image to PDF), each a set of Jetpack Compose screens.
+- `app/src/main/java/com/example/viewmodel/FormReadyViewModel.kt` — all app
+  state and orchestration.
+- `app/src/main/java/com/example/util/{PdfProcessor,PhotoProcessor,FileHelper}.kt` —
+  the actual on-device PDF/image processing (uses Android's built-in
+  `PdfRenderer`/`PdfDocument` and `Bitmap` APIs — no third-party libraries).
+- `app/src/main/java/com/example/data` — a small Room database that tracks
+  recently prepared documents for the Home screen's history list.
+
+## Privacy
+
+See [`PRIVACY_POLICY.md`](./PRIVACY_POLICY.md) — also shown in-app under
+**About & Privacy** on the Home screen.

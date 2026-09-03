@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Face
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Share
@@ -37,6 +36,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -60,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.CommonHeader
+import com.example.ui.components.rememberCameraCaptureLauncher
 import com.example.ui.theme.BluePrimary
 import com.example.ui.theme.BluePrimaryContainer
 import com.example.ui.theme.OnBluePrimaryContainer
@@ -88,6 +89,10 @@ fun SmartPhotoRequirementsScreen(
             viewModel.loadInputBitmapFromUri(context, uri)
         }
     }
+
+    val cameraLauncher = rememberCameraCaptureLauncher(
+        onImageCaptured = { bitmap -> viewModel?.setInputBitmap(bitmap) }
+    )
 
     val inputBitmap by viewModel?.inputBitmap?.collectAsState() ?: remember { mutableStateOf(null) }
 
@@ -154,6 +159,13 @@ fun SmartPhotoRequirementsScreen(
                             text = if (inputBitmap != null) "Tap to change image" else "Tap to choose portrait / ID picture",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = cameraLauncher) {
+                        Icon(
+                            imageVector = Icons.Default.PhotoCamera,
+                            contentDescription = "Take photo",
+                            tint = BluePrimary
                         )
                     }
                 }

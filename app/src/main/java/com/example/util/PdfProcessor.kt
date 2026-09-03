@@ -125,8 +125,28 @@ object PdfProcessor {
     }
 
     /**
+     * Like [getMetadata], but throws instead of silently defaulting when the file
+     * cannot be opened as a PDF (corrupted, password-protected, or not a PDF at
+     * all). Used wherever the caller needs to detect and report an invalid file.
+     */
+    fun getMetadataOrThrow(file: File): PdfMetadata {
+        val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        val renderer = PdfRenderer(pfd)
+        val pages = renderer.pageCount
+        renderer.close()
+        pfd.close()
+        return PdfMetadata(
+            file = file,
+            fileName = file.name,
+            pageCount = pages,
+            sizeBytes = file.length()
+        )
+    }
+
+    /**
      * Compresses a PDF file by rendering pages to compressed bitmaps and assembling into target PDF.
-     * Uses targetKb and mode ("Standard", "High", "Extreme") to calibrate quality.
+     * Uses targetKb and mode ("Standard", "High", "Extreme") to calibrate the starting quality, then
+     * iteratively steps quality/scale down further while the result still exceeds the target size.
      */
     fun compressPdf(
         sourceFile: File,
@@ -137,18 +157,47 @@ object PdfProcessor {
         val originalSize = sourceFile.length()
         val targetBytes = targetKb * 1024L
 
+        var (quality, scale) = when (aggressiveness) {
+            "Extreme" -> Pair(45, 0.7f)
+            "High" -> Pair(65, 0.85f)
+            else -> Pair(80, 1.0f)
+        }
+
+        var compressedSize = Long.MAX_VALUE
+        var attempts = 0
+        while (true) {
+            compressedSize = renderCompressedPdf(sourceFile, quality, scale, outputFile)
+            attempts++
+            val hitFloor = quality <= 20 && scale <= 0.35f
+            if (compressedSize <= targetBytes || attempts >= 6 || hitFloor) break
+            quality = (quality - 12).coerceAtLeast(20)
+            scale = (scale - 0.12f).coerceAtLeast(0.35f)
+        }
+
+        val reduction = if (originalSize > 0) {
+            (((originalSize - compressedSize).toDouble() / originalSize.toDouble()) * 100).toInt().coerceIn(0, 99)
+        } else 0
+
+        return CompressionResult(
+            outputFile = outputFile,
+            originalSizeBytes = originalSize,
+            compressedSizeBytes = compressedSize,
+            targetSizeBytes = targetBytes,
+            reductionPercent = reduction,
+            isTargetMet = compressedSize <= targetBytes
+        )
+    }
+
+    /**
+     * Renders every page of [sourceFile] to a JPEG at the given [quality]/[scale] and
+     * writes the resulting PDF to [outputFile]. Returns the resulting file size in bytes.
+     */
+    private fun renderCompressedPdf(sourceFile: File, quality: Int, scale: Float, outputFile: File): Long {
         val pfd = ParcelFileDescriptor.open(sourceFile, ParcelFileDescriptor.MODE_READ_ONLY)
         val renderer = PdfRenderer(pfd)
         val pageCount = renderer.pageCount
 
         val pdfDoc = PdfDocument()
-
-        // Quality and scale factors based on target and aggressiveness
-        val (quality, scale) = when (aggressiveness) {
-            "Extreme" -> Pair(45, 0.7f)
-            "High" -> Pair(65, 0.85f)
-            else -> Pair(80, 1.0f)
-        }
 
         for (i in 0 until pageCount) {
             val page = renderer.openPage(i)
@@ -185,22 +234,7 @@ object PdfProcessor {
         }
         pdfDoc.close()
 
-        val compressedSize = outputFile.length()
-        val reduction = if (originalSize > 0) {
-            (((originalSize - compressedSize).toDouble() / originalSize.toDouble()) * 100).toInt().coerceAtLeast(1)
-        } else 50
-
-        // Check if target met (or prototype expectation)
-        val isTargetMet = compressedSize <= targetBytes || (targetKb >= 100)
-
-        return CompressionResult(
-            outputFile = outputFile,
-            originalSizeBytes = originalSize,
-            compressedSizeBytes = compressedSize,
-            targetSizeBytes = targetBytes,
-            reductionPercent = reduction,
-            isTargetMet = isTargetMet
-        )
+        return outputFile.length()
     }
 
     /**

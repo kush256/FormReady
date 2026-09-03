@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,9 +54,12 @@ import com.example.ui.theme.OnBluePrimaryContainer
 import com.example.ui.theme.SuccessContainer
 import com.example.ui.theme.SuccessGreen
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.IconButton
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.platform.LocalContext
 import com.example.util.FileHelper
@@ -71,7 +75,25 @@ fun SplitPdfRefinedScreen(
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
-    var pageRangeText by remember { mutableStateOf("1-3, 5") }
+    LaunchedEffect(Unit) {
+        viewModel?.initSplitPdf()
+    }
+
+    val selectedPdf by viewModel?.selectedSplitPdf?.collectAsState() ?: remember { mutableStateOf<PdfProcessor.PdfMetadata?>(null) }
+    val vmRange by viewModel?.splitRange?.collectAsState() ?: remember { mutableStateOf("1-3") }
+    var pageRangeText by remember(vmRange) { mutableStateOf(vmRange) }
+
+    val pdfPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel?.selectSplitPdf(uri)
+        }
+    }
+
+    val fileName = selectedPdf?.fileName ?: "Comprehensive_Application_Dossier.pdf"
+    val fileDetail = selectedPdf?.let { "Total: ${it.pageCount} Pages  •  ${FileHelper.formatFileSize(it.sizeBytes)}" }
+        ?: "Total: 12 Pages  •  3.8 MB"
 
     Column(
         modifier = modifier
@@ -91,11 +113,13 @@ fun SplitPdfRefinedScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Document summary card
+            // Document summary card - tap to pick a different source PDF
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { pdfPickerLauncher.launch(arrayOf("application/pdf")) }
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
@@ -115,18 +139,24 @@ fun SplitPdfRefinedScreen(
                         )
                     }
                     Spacer(modifier = Modifier.width(14.dp))
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Comprehensive_Application_Dossier.pdf",
+                            text = fileName,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
                         Text(
-                            text = "Total: 12 Pages  •  3.8 MB",
+                            text = fileDetail,
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    Text(
+                        text = "Change",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = BluePrimary
+                    )
                 }
             }
 
@@ -181,24 +211,6 @@ fun SplitPdfRefinedScreen(
                     fontWeight = FontWeight.SemiBold
                 )
             }
-
-            // Trigger for testing invalid page range state (matches //button[contains(normalize-space(), 'Split PDF')])
-            OutlinedButton(
-                onClick = onInvalidRange,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("split_pdf_invalid_range_trigger")
-            ) {
-                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = ErrorRed, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Split PDF (Test Invalid Range: 15-20)",
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
         }
     }
 }
@@ -212,6 +224,10 @@ fun SplitPdfInvalidRangeScreen(
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
+    val invalidInfo by viewModel?.splitInvalidInfo?.collectAsState() ?: remember { mutableStateOf<Pair<String, Int>?>(null) }
+    val requestedRange = invalidInfo?.first ?: "15-20"
+    val totalPages = invalidInfo?.second ?: 12
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -255,7 +271,7 @@ fun SplitPdfInvalidRangeScreen(
             Spacer(modifier = Modifier.height(10.dp))
 
             Text(
-                text = "Requested pages '15-20' exceed document limits. The selected PDF file contains only 12 pages in total.",
+                text = "Requested pages '$requestedRange' exceed document limits. The selected PDF file contains only $totalPages page${if (totalPages == 1) "" else "s"} in total.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp)
@@ -282,7 +298,10 @@ fun SplitPdfInvalidRangeScreen(
 
             // Action: Select all (matches //button[contains(normalize-space(), 'Select all')])
             Button(
-                onClick = onSelectAll,
+                onClick = {
+                    viewModel?.selectAllPagesForSplit()
+                    onSelectAll()
+                },
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier

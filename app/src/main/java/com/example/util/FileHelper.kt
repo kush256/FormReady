@@ -64,4 +64,13 @@ object FileHelper {
         }
         return tempFile
     }
+
+    /**
+     * Creates an empty file in cache/camera to be used as the destination for a
+     * camera capture Intent (via FileProvider Uri).
+     */
+    fun createImageCaptureFile(context: Context): File {
+        val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+        return File(dir, "capture_${System.currentTimeMillis()}.jpg")
+    }
 }

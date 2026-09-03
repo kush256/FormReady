@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Description
@@ -83,7 +82,6 @@ import com.example.ui.theme.SuccessContainer
 import com.example.ui.theme.SuccessGreen
 import com.example.ui.theme.WarningAmber
 import com.example.ui.theme.WarningContainer
-import kotlinx.coroutines.delay
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -107,11 +105,11 @@ fun CompressPdfEmptyScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            viewModel?.selectCustomPdf(uri)
-        } else {
-            viewModel?.selectValidSamplePdf()
+            viewModel?.selectCustomPdf(uri) { isValid ->
+                if (isValid) onChooseValidPdf() else onChooseInvalidPdf()
+            } ?: onChooseValidPdf()
         }
-        onChooseValidPdf()
+        // A null uri means the user cancelled the picker; stay on this screen.
     }
 
     Column(
@@ -211,23 +209,33 @@ fun CompressPdfEmptyScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // Choose PDF (Simulate Damaged / Corrupted file)
+            Text(
+                text = "Or use a bundled sample application dossier to try it out instantly.",
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             OutlinedButton(
-                onClick = onChooseInvalidPdf,
+                onClick = {
+                    viewModel?.selectValidSamplePdf()
+                    onChooseValidPdf()
+                },
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
-                    .testTag("choose_another_pdf_test_invalid")
+                    .testTag("choose_sample_pdf_action")
             ) {
-                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = ErrorRed, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Choose PDF (Test Damaged File)",
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.error
+                    text = "Use Sample PDF",
+                    fontSize = 14.sp
                 )
             }
         }
@@ -312,13 +320,13 @@ fun CompressPdfInvalidFileScreen(
             ) {
                 Column(modifier = Modifier.padding(18.dp)) {
                     Text(
-                        text = "File: damaged_application.pdf",
+                        text = "This file cannot be processed",
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "This file cannot be processed. It is either corrupted, password encrypted without access, or missing valid PDF stream headers.",
+                        text = "It is either corrupted, password encrypted without access, or missing valid PDF stream headers.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -544,21 +552,20 @@ fun CompressPdfProcessingScreen(
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
-    var progress by remember { mutableFloatStateOf(0.1f) }
     val vmProgress by viewModel?.compressProgress?.collectAsState() ?: remember { mutableFloatStateOf(0f) }
     val vmStatus by viewModel?.compressStatusMessage?.collectAsState() ?: remember { mutableStateOf("Optimizing PDF Streams...") }
 
     LaunchedEffect(Unit) {
-        viewModel?.executeCompression { _ ->
-            // compression completed
-        }
-        while (progress < 0.95f) {
-            delay(120)
-            progress += 0.08f
+        if (viewModel != null) {
+            viewModel.executeCompression { targetMet ->
+                if (targetMet) onSuccess() else onNotMatched()
+            }
+        } else {
+            onSuccess()
         }
     }
 
-    val displayProgress = if (vmProgress > 0f) vmProgress else progress
+    val displayProgress = vmProgress
 
     Column(
         modifier = modifier
@@ -599,113 +606,6 @@ fun CompressPdfProcessingScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
-
-            Spacer(modifier = Modifier.height(28.dp))
-
-            // Navigation Spec requires:
-            // Element (xpath: //div[contains(@class, 'rounded-2xl')]) -> Compress PDF Result Success (push transition)
-            // Element (xpath: //div[contains(@class, 'rounded-2xl')]) -> Compress PDF Result Not Matched (push transition)
-
-            Text(
-                text = "Choose outcome to inspect results:",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Card 1: rounded-2xl class equivalent leading to Result Success
-            Card(
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = SuccessContainer),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp))
-                    .clickable { onSuccess() }
-                    .testTag("outcome_success_card")
-            ) {
-                Row(
-                    modifier = Modifier.padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = SuccessGreen,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Simulate: Size Target Met",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = SuccessGreen
-                            )
-                            Text(
-                                text = "Reduced from 1.8 MB to 184 KB (<200KB Passed)",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                    Icon(
-                        imageVector = Icons.Default.ArrowForward,
-                        contentDescription = null,
-                        tint = SuccessGreen
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Card 2: rounded-2xl class equivalent leading to Result Not Matched
-            Card(
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(containerColor = WarningContainer),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp))
-                    .clickable { onNotMatched() }
-                    .testTag("outcome_not_matched_card")
-            ) {
-                Row(
-                    modifier = Modifier.padding(18.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = WarningAmber,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Simulate: Target Not Matched",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                color = WarningAmber
-                            )
-                            Text(
-                                text = "Reduced to 248 KB, but target was <100 KB",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                    Icon(
-                        imageVector = Icons.Default.ArrowForward,
-                        contentDescription = null,
-                        tint = WarningAmber
-                    )
-                }
-            }
         }
     }
 }
@@ -891,6 +791,12 @@ fun CompressPdfResultNotMatchedScreen(
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
+    val compressResult by viewModel?.compressResult?.collectAsState() ?: remember { mutableStateOf(null) }
+    var isRetrying by remember { mutableStateOf(false) }
+
+    val achievedText = compressResult?.let { FileHelper.formatFileSize(it.compressedSizeBytes) } ?: "the target size"
+    val targetKbText = compressResult?.let { "${it.targetSizeBytes / 1024} KB" } ?: "your selected limit"
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -937,14 +843,14 @@ fun CompressPdfResultNotMatchedScreen(
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
-                        text = "File reached 248 KB, but your portal requirement is < 100 KB.",
+                        text = "File reached $achievedText, but your portal requirement is < $targetKbText.",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "Scanned photo documents require extreme downsampling or removal of background color shading to reach under 100 KB.",
+                        text = "Scanned photo documents require extreme downsampling or removal of background color shading to reach under $targetKbText.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -954,7 +860,18 @@ fun CompressPdfResultNotMatchedScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             Button(
-                onClick = onTryStronger,
+                onClick = {
+                    if (viewModel != null) {
+                        isRetrying = true
+                        viewModel.executeCompression(forceExtreme = true) { targetMet ->
+                            isRetrying = false
+                            if (targetMet) onTryStronger()
+                        }
+                    } else {
+                        onTryStronger()
+                    }
+                },
+                enabled = !isRetrying,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier
@@ -962,8 +879,16 @@ fun CompressPdfResultNotMatchedScreen(
                     .height(50.dp)
                     .testTag("try_stronger_compression_button")
             ) {
+                if (isRetrying) {
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        color = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                }
                 Text(
-                    text = "Try stronger compression",
+                    text = if (isRetrying) "Compressing at maximum strength..." else "Try stronger compression",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold
                 )

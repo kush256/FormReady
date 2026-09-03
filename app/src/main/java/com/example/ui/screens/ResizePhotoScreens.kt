@@ -23,9 +23,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Crop
-import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Image as ImagePlaceholderIcon
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.OpenInNew
@@ -36,6 +37,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -59,6 +61,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.CommonHeader
+import com.example.ui.components.rememberCameraCaptureLauncher
 import com.example.ui.theme.BluePrimary
 import com.example.ui.theme.BluePrimaryContainer
 import com.example.ui.theme.OnBluePrimaryContainer
@@ -88,6 +91,10 @@ fun ResizePhotoScreen(
             viewModel.loadInputBitmapFromUri(context, uri)
         }
     }
+
+    val cameraLauncher = rememberCameraCaptureLauncher(
+        onImageCaptured = { bitmap -> viewModel?.setInputBitmap(bitmap) }
+    )
 
     val inputBitmap by viewModel?.inputBitmap?.collectAsState() ?: remember { mutableStateOf(null) }
 
@@ -141,7 +148,7 @@ fun ResizePhotoScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Image,
+                                imageVector = ImagePlaceholderIcon,
                                 contentDescription = null,
                                 tint = OnBluePrimaryContainer
                             )
@@ -158,6 +165,13 @@ fun ResizePhotoScreen(
                             text = if (inputBitmap != null) "Current: ${inputBitmap!!.width} x ${inputBitmap!!.height} px (Tap to change)" else "Current: 2400 x 3000 px  •  2.6 MB (Tap to change)",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = cameraLauncher) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = "Take photo",
+                            tint = BluePrimary
                         )
                     }
                 }

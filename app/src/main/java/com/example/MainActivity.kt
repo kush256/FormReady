@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.navigation.Screen
 import com.example.viewmodel.FormReadyViewModel
+import com.example.ui.screens.AboutScreen
 import com.example.ui.screens.CompressPdfEmptyScreen
 import com.example.ui.screens.CompressPdfInvalidFileScreen
 import com.example.ui.screens.CompressPdfProcessingScreen
@@ -118,7 +119,12 @@ fun FormReadyApp() {
         when (screen) {
           Screen.FORM_READY_HOME -> HomeScreen(
             onNavigate = { target -> navigateTo(target) },
+            onAboutClick = { navigateTo(Screen.ABOUT) },
             viewModel = formReadyViewModel
+          )
+
+          Screen.ABOUT -> AboutScreen(
+            onBack = { navigateBackTo(Screen.FORM_READY_HOME) }
           )
 
           // Compress PDF flow
@@ -157,7 +163,7 @@ fun FormReadyApp() {
 
           Screen.COMPRESS_PDF_NOT_MATCHED -> CompressPdfResultNotMatchedScreen(
             onBack = { navigateBackTo(Screen.COMPRESS_PDF_CONFIG) },
-            onTryStronger = { navigateBackTo(Screen.COMPRESS_PDF_CONFIG) },
+            onTryStronger = { navigateTo(Screen.COMPRESS_PDF_SUCCESS) },
             onChangeRequirement = { navigateBackTo(Screen.COMPRESS_PDF_CONFIG) },
             viewModel = formReadyViewModel
           )
@@ -166,12 +172,13 @@ fun FormReadyApp() {
           Screen.MERGE_PDF -> MergePdfRefinedScreen(
             onBack = { navigateBackTo(Screen.FORM_READY_HOME) },
             onMergeSuccess = { navigateTo(Screen.MERGE_PDF_SUCCESS) },
+            onOneFileError = { navigateTo(Screen.MERGE_PDF_ONE_FILE) },
             viewModel = formReadyViewModel
           )
 
           Screen.MERGE_PDF_ONE_FILE -> MergePdfOneFileScreen(
             onBack = { navigateBackTo(Screen.FORM_READY_HOME) },
-            onAddAnotherPdf = { navigateTo(Screen.MERGE_PDF) },
+            onAddAnotherPdf = { navigateBackTo(Screen.MERGE_PDF) },
             viewModel = formReadyViewModel
           )
 
@@ -191,8 +198,8 @@ fun FormReadyApp() {
           )
 
           Screen.SPLIT_PDF_INVALID_RANGE -> SplitPdfInvalidRangeScreen(
-            onBack = { navigateBackTo(Screen.FORM_READY_HOME) },
-            onChangePdf = { navigateBackTo(Screen.FORM_READY_HOME) },
+            onBack = { navigateBackTo(Screen.SPLIT_PDF) },
+            onChangePdf = { navigateBackTo(Screen.SPLIT_PDF) },
             onSelectAll = { navigateDirect(Screen.SPLIT_PDF) },
             viewModel = formReadyViewModel
           )
@@ -244,7 +251,7 @@ fun FormReadyApp() {
 
           Screen.SIGNATURE_CAMERA_PERMISSION_DENIED -> SignatureCameraPermissionDeniedScreen(
             onBack = { navigateBackTo(Screen.SIGNATURE_MAKER) },
-            onChooseFromGallery = { navigateBackTo(Screen.SIGNATURE_MAKER) },
+            onChooseFromGallery = { navigateTo(Screen.SIGNATURE_RESULT) },
             viewModel = formReadyViewModel
           )
 

@@ -2,11 +2,14 @@ package com.example.util
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
+import android.media.ExifInterface
 import androidx.compose.ui.geometry.Offset
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -275,6 +278,121 @@ object PhotoProcessor {
             bitmap = finalSignature,
             width = 300,
             height = 120,
+            sizeBytes = bytes,
+            isSizeCompliant = bytes in 5000L..25000L
+        )
+    }
+
+    /**
+     * Decodes a bitmap from a camera-captured file, downsampling large camera
+     * output (which can be 4000px+) and correcting EXIF rotation.
+     */
+    fun decodeCapturedBitmap(file: File, maxDimension: Int = 2000): Bitmap? {
+        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, boundsOptions)
+        if (boundsOptions.outWidth <= 0 || boundsOptions.outHeight <= 0) return null
+
+        var sampleSize = 1
+        while ((boundsOptions.outWidth / sampleSize) > maxDimension ||
+            (boundsOptions.outHeight / sampleSize) > maxDimension
+        ) {
+            sampleSize *= 2
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val bitmap = BitmapFactory.decodeFile(file.absolutePath, decodeOptions) ?: return null
+
+        return try {
+            val exif = ExifInterface(file.absolutePath)
+            val orientation = exif.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            )
+            val rotationDegrees = when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                else -> 0f
+            }
+            if (rotationDegrees != 0f) {
+                val matrix = Matrix().apply { postRotate(rotationDegrees) }
+                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            } else {
+                bitmap
+            }
+        } catch (_: Exception) {
+            bitmap
+        }
+    }
+
+    /**
+     * Processes a photographed pen-and-paper signature: boosts contrast so ink
+     * reads as solid black/ink-color against a clean white background, then
+     * compresses into the same 10-20 KB signature spec as drawn signatures.
+     */
+    fun processSignatureFromPhoto(
+        photoBitmap: Bitmap,
+        outputFile: File
+    ): SignatureProcessResult {
+        // Crop to a 5:2 signature-strip aspect ratio around the center of the photo,
+        // since paper signatures are usually photographed with excess surrounding page.
+        val targetAspect = 300f / 120f
+        val srcAspect = photoBitmap.width.toFloat() / photoBitmap.height.toFloat()
+
+        val cropped = if (srcAspect > targetAspect) {
+            val cropW = (photoBitmap.height * targetAspect).toInt().coerceAtMost(photoBitmap.width)
+            val cropX = (photoBitmap.width - cropW) / 2
+            Bitmap.createBitmap(photoBitmap, cropX, 0, cropW, photoBitmap.height)
+        } else {
+            val cropH = (photoBitmap.width / targetAspect).toInt().coerceAtMost(photoBitmap.height)
+            val cropY = (photoBitmap.height - cropH) / 2
+            Bitmap.createBitmap(photoBitmap, 0, cropY, photoBitmap.width, cropH)
+        }
+
+        val scaled = Bitmap.createScaledBitmap(cropped, 300, 120, true)
+
+        // Increase contrast + threshold light paper background towards pure white
+        // while keeping darker ink strokes intact, approximating a clean scan.
+        val enhanced = scaled.copy(Bitmap.Config.ARGB_8888, true)
+        val w = enhanced.width
+        val h = enhanced.height
+        val pixels = IntArray(w * h)
+        enhanced.getPixels(pixels, 0, w, 0, 0, w, h)
+        for (i in pixels.indices) {
+            val c = pixels[i]
+            val r = Color.red(c)
+            val g = Color.green(c)
+            val b = Color.blue(c)
+            val brightness = (r + g + b) / 3
+            pixels[i] = if (brightness > 140) {
+                Color.WHITE
+            } else {
+                val contrastFactor = 1.6f
+                val newR = (((r - 128) * contrastFactor) + 128).toInt().coerceIn(0, 255)
+                val newG = (((g - 128) * contrastFactor) + 128).toInt().coerceIn(0, 255)
+                val newB = (((b - 128) * contrastFactor) + 128).toInt().coerceIn(0, 255)
+                Color.rgb(newR, newG, newB)
+            }
+        }
+        enhanced.setPixels(pixels, 0, w, 0, 0, w, h)
+
+        var quality = 82
+        var stream = ByteArrayOutputStream()
+        enhanced.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+        while (stream.size() > 20_000 && quality > 30) {
+            quality -= 8
+            stream = ByteArrayOutputStream()
+            enhanced.compress(Bitmap.CompressFormat.JPEG, quality, stream)
+        }
+
+        FileOutputStream(outputFile).use { out -> out.write(stream.toByteArray()) }
+
+        val bytes = outputFile.length()
+        return SignatureProcessResult(
+            file = outputFile,
+            bitmap = enhanced,
+            width = w,
+            height = h,
             sizeBytes = bytes,
             isSizeCompliant = bytes in 5000L..25000L
         )
