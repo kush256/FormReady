@@ -63,9 +63,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.CommonHeader
@@ -89,8 +91,13 @@ fun SignatureMakerScreen(
     viewModel: FormReadyViewModel? = null,
     modifier: Modifier = Modifier
 ) {
-    val points = remember { mutableStateListOf<Offset>() }
+    // Strokes are kept separate so lifting a finger starts a new one instead of
+    // joining the two with a straight line.
+    val strokes = remember { mutableStateListOf<List<Offset>>() }
+    var currentStroke by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    var padSize by remember { mutableStateOf(IntSize.Zero) }
     var inkColor by remember { mutableStateOf(Color.Black) }
+    val hasInk = strokes.any { it.isNotEmpty() } || currentStroke.isNotEmpty()
 
     val cameraLauncher = rememberCameraCaptureLauncher(
         onImageCaptured = { bitmap ->
@@ -140,22 +147,34 @@ fun SignatureMakerScreen(
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
+                        .onSizeChanged { padSize = it }
                         .pointerInput(Unit) {
                             detectDragGestures(
                                 onDragStart = { offset ->
-                                    points.add(offset)
+                                    currentStroke = listOf(offset)
                                 },
                                 onDrag = { change, _ ->
-                                    points.add(change.position)
+                                    currentStroke = currentStroke + change.position
+                                },
+                                onDragEnd = {
+                                    if (currentStroke.isNotEmpty()) strokes.add(currentStroke)
+                                    currentStroke = emptyList()
+                                },
+                                onDragCancel = {
+                                    if (currentStroke.isNotEmpty()) strokes.add(currentStroke)
+                                    currentStroke = emptyList()
                                 }
                             )
                         }
                 ) {
-                    if (points.isNotEmpty()) {
+                    val allStrokes =
+                        if (currentStroke.isEmpty()) strokes.toList() else strokes + listOf(currentStroke)
+                    for (stroke in allStrokes) {
+                        if (stroke.isEmpty()) continue
                         val path = Path()
-                        path.moveTo(points.first().x, points.first().y)
-                        for (i in 1 until points.size) {
-                            path.lineTo(points[i].x, points[i].y)
+                        path.moveTo(stroke.first().x, stroke.first().y)
+                        for (i in 1 until stroke.size) {
+                            path.lineTo(stroke[i].x, stroke[i].y)
                         }
                         drawPath(
                             path = path,
@@ -165,7 +184,7 @@ fun SignatureMakerScreen(
                     }
                 }
 
-                if (points.isEmpty()) {
+                if (!hasInk) {
                     Text(
                         text = "Sign here with your finger or stylus",
                         color = Color.LightGray,
@@ -176,7 +195,10 @@ fun SignatureMakerScreen(
 
                 // Clear button
                 IconButton(
-                    onClick = { points.clear() },
+                    onClick = {
+                        strokes.clear()
+                        currentStroke = emptyList()
+                    },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(8.dp)
@@ -247,8 +269,13 @@ fun SignatureMakerScreen(
             Button(
                 onClick = {
                     if (viewModel != null) {
+                        val allStrokes =
+                            if (currentStroke.isEmpty()) strokes.toList()
+                            else strokes + listOf(currentStroke)
                         viewModel.executePrepareSignature(
-                            points = points.toList(),
+                            strokes = allStrokes,
+                            padWidth = padSize.width.toFloat(),
+                            padHeight = padSize.height.toFloat(),
                             inkColor = inkColor,
                             onSuccess = onPrepareSignature
                         )
@@ -256,7 +283,7 @@ fun SignatureMakerScreen(
                         onPrepareSignature()
                     }
                 },
-                enabled = points.isNotEmpty(),
+                enabled = hasInk && padSize.width > 0,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier

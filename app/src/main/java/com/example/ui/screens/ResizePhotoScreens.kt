@@ -157,12 +157,16 @@ fun ResizePhotoScreen(
                     Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (inputBitmap != null) "Custom Image Selected" else "applicant_photo_raw.jpg",
+                            text = if (inputBitmap != null) "Photo selected" else "No photo selected",
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
                         Text(
-                            text = if (inputBitmap != null) "Current: ${inputBitmap!!.width} x ${inputBitmap!!.height} px (Tap to change)" else "Current: 2400 x 3000 px  •  2.6 MB (Tap to change)",
+                            text = if (inputBitmap != null) {
+                                "Current: ${inputBitmap!!.width} x ${inputBitmap!!.height} px (Tap to change)"
+                            } else {
+                                "Tap to choose from gallery, or use the camera"
+                            },
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -272,13 +276,16 @@ fun ResizePhotoScreen(
                         viewModel.processResizePhoto(
                             widthPx = w,
                             heightPx = h,
-                            targetKb = 100,
+                            // This screen asks for dimensions only, so no size
+                            // ceiling is imposed on the encoded result.
+                            targetKb = 0,
                             onComplete = onResizeSuccess
                         )
                     } else {
                         onResizeSuccess()
                     }
                 },
+                enabled = viewModel == null || inputBitmap != null,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier

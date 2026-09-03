@@ -1,9 +1,8 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Color as AndroidColor
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -13,11 +12,11 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.AppDatabase
 import com.example.data.DocumentEntity
 import com.example.data.DocumentRepository
+import com.example.util.BitmapLoader
 import com.example.util.FileHelper
 import com.example.util.PdfProcessor
 import com.example.util.PhotoProcessor
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +32,17 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
 
     val recentDocuments: StateFlow<List<DocumentEntity>>
 
+    /**
+     * Last user-facing failure. Operations report problems here instead of
+     * silently substituting placeholder content for the user's own files.
+     */
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    fun clearError() {
+        _errorMessage.value = null
+    }
+
     init {
         val database = AppDatabase.getDatabase(application)
         repository = DocumentRepository(database.documentDao())
@@ -41,16 +51,7 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
-
-        // Pre-create sample documents so offline functionality is instantaneous
-        viewModelScope.launch(Dispatchers.IO) {
-            val samples = PdfProcessor.ensureSamplePdfs(getApplication())
-            // Initialize default compress PDF with Application Dossier
-            if (samples.isNotEmpty()) {
-                val dossier = samples.first { it.fileName.contains("Dossier") }
-                _selectedCompressPdf.value = dossier
-            }
-        }
+        PdfProcessor.init(application)
     }
 
     // -------------------------------------------------------------
@@ -71,7 +72,7 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _compressProgress = MutableStateFlow(0f)
     val compressProgress: StateFlow<Float> = _compressProgress.asStateFlow()
 
-    private val _compressStatusMessage = MutableStateFlow("Analyzing PDF structure...")
+    private val _compressStatusMessage = MutableStateFlow("Preparing...")
     val compressStatusMessage: StateFlow<String> = _compressStatusMessage.asStateFlow()
 
     fun setTargetKb(kb: Int) {
@@ -82,11 +83,23 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
         _aggressiveness.value = mode
     }
 
+    /**
+     * Writes a small demo PDF and selects it. Only reachable from the explicit
+     * "try it with a sample" action — never used to stand in for a file the user
+     * chose themselves.
+     */
     fun selectValidSamplePdf() {
         viewModelScope.launch(Dispatchers.IO) {
-            val samples = PdfProcessor.ensureSamplePdfs(getApplication())
-            val dossier = samples.firstOrNull { it.fileName.contains("Dossier") } ?: samples.first()
-            _selectedCompressPdf.value = dossier
+            try {
+                val dir = File(getApplication<Application>().filesDir, "samples").apply { mkdirs() }
+                val sample = File(dir, "Sample_Application_Form.pdf")
+                if (!sample.exists() || sample.length() == 0L) {
+                    PdfProcessor.generatePlaceholderPdf(sample, 3, "Sample Application Form")
+                }
+                _selectedCompressPdf.value = PdfProcessor.getMetadata(sample)
+            } catch (e: Exception) {
+                _errorMessage.value = "Could not prepare the sample PDF."
+            }
         }
     }
 
@@ -96,67 +109,69 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
      * protected, or otherwise not a valid PDF.
      */
     fun selectCustomPdf(uri: Uri, onResult: (Boolean) -> Unit = {}) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val success = try {
-                val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "user_pdf", ".pdf")
-                val meta = PdfProcessor.getMetadataOrThrow(tempFile)
-                _selectedCompressPdf.value = meta
-                true
-            } catch (e: Exception) {
-                false
+        viewModelScope.launch {
+            val meta = withContext(Dispatchers.IO) {
+                try {
+                    val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "user_pdf", ".pdf")
+                    PdfProcessor.getMetadataOrThrow(tempFile)
+                } catch (e: Exception) {
+                    null
+                }
             }
-            withContext(Dispatchers.Main) { onResult(success) }
+            if (meta != null) _selectedCompressPdf.value = meta
+            onResult(meta != null)
         }
     }
 
     fun executeCompression(forceExtreme: Boolean = false, onComplete: (Boolean) -> Unit) {
+        val current = _selectedCompressPdf.value
+        if (current == null) {
+            _errorMessage.value = "Choose a PDF to compress first."
+            onComplete(false)
+            return
+        }
+
+        val effectiveAggressiveness = if (forceExtreme) "Extreme" else _aggressiveness.value
+        if (forceExtreme) _aggressiveness.value = "Extreme"
+
         viewModelScope.launch {
-            val current = _selectedCompressPdf.value ?: run {
-                selectValidSamplePdf()
-                _selectedCompressPdf.value
-            }
-
-            val effectiveAggressiveness = if (forceExtreme) "Extreme" else _aggressiveness.value
-            if (forceExtreme) _aggressiveness.value = "Extreme"
-
             _compressProgress.value = 0.1f
-            _compressStatusMessage.value = "Analyzing PDF structure..."
-            delay(400)
-
-            _compressProgress.value = 0.45f
-            _compressStatusMessage.value = "Downsampling high-res images..."
-            delay(500)
-
-            _compressProgress.value = 0.8f
-            _compressStatusMessage.value = "Optimizing font objects and streams..."
-            delay(400)
+            _compressStatusMessage.value = "Rendering pages..."
 
             val result = withContext(Dispatchers.IO) {
-                val outDir = File(getApplication<Application>().filesDir, "compressed").apply { mkdirs() }
-                val outFile = File(outDir, "Compressed_${System.currentTimeMillis()}.pdf")
-                val srcFile = current?.file ?: File(getApplication<Application>().filesDir, "samples/Application_Dossier_2026.pdf")
-                PdfProcessor.compressPdf(
-                    sourceFile = srcFile,
-                    targetKb = _targetKb.value,
-                    aggressiveness = effectiveAggressiveness,
-                    outputFile = outFile
-                )
+                try {
+                    val outDir = File(getApplication<Application>().filesDir, "compressed").apply { mkdirs() }
+                    val outFile = File(outDir, "Compressed_${System.currentTimeMillis()}.pdf")
+                    PdfProcessor.compressPdf(
+                        sourceFile = current.file,
+                        targetKb = _targetKb.value,
+                        aggressiveness = effectiveAggressiveness,
+                        outputFile = outFile
+                    )
+                } catch (e: Exception) {
+                    null
+                }
             }
 
             _compressProgress.value = 1.0f
+            if (result == null) {
+                _compressStatusMessage.value = "Compression failed."
+                _errorMessage.value = "Could not compress this PDF. It may be corrupted or protected."
+                onComplete(false)
+                return@launch
+            }
+
+            _compressStatusMessage.value = "Done"
             _compressResult.value = result
 
-            // Save to room history if successful
-            if (result.isTargetMet) {
-                repository.insert(
-                    DocumentEntity(
-                        title = current?.fileName ?: "Compressed_PDF.pdf",
-                        type = "COMPRESS_PDF",
-                        details = "${FileHelper.formatFileSize(result.compressedSizeBytes)} • Reduced by ${result.reductionPercent}%",
-                        filePath = result.outputFile.absolutePath
-                    )
+            repository.insert(
+                DocumentEntity(
+                    title = current.fileName,
+                    type = "COMPRESS_PDF",
+                    details = "${FileHelper.formatFileSize(result.compressedSizeBytes)} • Reduced by ${result.reductionPercent}%",
+                    filePath = result.outputFile.absolutePath
                 )
-            }
+            )
 
             onComplete(result.isTargetMet)
         }
@@ -171,43 +186,36 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _mergeResult = MutableStateFlow<PdfProcessor.MergeResult?>(null)
     val mergeResult: StateFlow<PdfProcessor.MergeResult?> = _mergeResult.asStateFlow()
 
-    fun initMergeList() {
-        if (_mergeList.value.isEmpty()) {
-            viewModelScope.launch(Dispatchers.IO) {
-                val samples = PdfProcessor.ensureSamplePdfs(getApplication())
-                // Take 2 files initially
-                val initial = samples.filter { !it.fileName.contains("Comprehensive") }.take(2)
-                _mergeList.value = initial
-            }
-        }
-    }
-
-    fun addSampleToMerge() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val samples = PdfProcessor.ensureSamplePdfs(getApplication())
-            val existingNames = _mergeList.value.map { it.fileName }
-            val next = samples.firstOrNull { it.fileName !in existingNames } ?: samples.last()
-            _mergeList.value = _mergeList.value + next
-        }
-    }
+    /**
+     * The merge list starts empty so that a merge only ever contains documents the
+     * user actually chose.
+     */
+    fun initMergeList() = Unit
 
     /**
-     * Imports one or more user-picked PDFs into the merge list, skipping any
+     * Imports one or more user-picked PDFs into the merge list, reporting any
      * that turn out to be corrupted or unreadable.
      */
     fun addPdfsToMerge(uris: List<Uri>) {
         if (uris.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val imported = uris.mapNotNull { uri ->
-                try {
-                    val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "merge_pdf", ".pdf")
-                    PdfProcessor.getMetadataOrThrow(tempFile)
-                } catch (e: Exception) {
-                    null
+        viewModelScope.launch {
+            val imported = withContext(Dispatchers.IO) {
+                uris.mapNotNull { uri ->
+                    try {
+                        val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "merge_pdf", ".pdf")
+                        PdfProcessor.getMetadataOrThrow(tempFile)
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
             }
             if (imported.isNotEmpty()) {
                 _mergeList.value = _mergeList.value + imported
+            }
+            val skipped = uris.size - imported.size
+            if (skipped > 0) {
+                _errorMessage.value =
+                    "$skipped file${if (skipped == 1) "" else "s"} could not be read as a PDF."
             }
         }
     }
@@ -225,16 +233,22 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
             onOneFileError()
             return
         }
-        // Guaranteed >= 2 valid PDFs from here on.
 
         viewModelScope.launch {
+            val sources = _mergeList.value.map { it.file }
             val result = withContext(Dispatchers.IO) {
-                val outDir = File(getApplication<Application>().filesDir, "merged").apply { mkdirs() }
-                val outFile = File(outDir, "Merged_Dossier_${System.currentTimeMillis()}.pdf")
-                PdfProcessor.mergePdfs(
-                    sourceFiles = _mergeList.value.map { it.file },
-                    outputFile = outFile
-                )
+                try {
+                    val outDir = File(getApplication<Application>().filesDir, "merged").apply { mkdirs() }
+                    val outFile = File(outDir, "Merged_Dossier_${System.currentTimeMillis()}.pdf")
+                    PdfProcessor.mergePdfs(sourceFiles = sources, outputFile = outFile)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+
+            if (result == null) {
+                _errorMessage.value = "Could not merge these PDFs."
+                return@launch
             }
 
             _mergeResult.value = result
@@ -268,29 +282,25 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _splitInvalidInfo = MutableStateFlow<Pair<String, Int>?>(null)
     val splitInvalidInfo: StateFlow<Pair<String, Int>?> = _splitInvalidInfo.asStateFlow()
 
-    fun initSplitPdf() {
-        if (_selectedSplitPdf.value == null) {
-            viewModelScope.launch(Dispatchers.IO) {
-                val samples = PdfProcessor.ensureSamplePdfs(getApplication())
-                val default = samples.firstOrNull { it.fileName.contains("Comprehensive") } ?: samples.first()
-                _selectedSplitPdf.value = default
-            }
-        }
-    }
+    /** The split source is whatever the user picks; nothing is preloaded. */
+    fun initSplitPdf() = Unit
 
     /** Imports a user-picked PDF as the split source. */
     fun selectSplitPdf(uri: Uri, onResult: (Boolean) -> Unit = {}) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val success = try {
-                val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "split_source", ".pdf")
-                val meta = PdfProcessor.getMetadataOrThrow(tempFile)
+        viewModelScope.launch {
+            val meta = withContext(Dispatchers.IO) {
+                try {
+                    val tempFile = FileHelper.copyUriToTempFile(getApplication(), uri, "split_source", ".pdf")
+                    PdfProcessor.getMetadataOrThrow(tempFile)
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (meta != null) {
                 _selectedSplitPdf.value = meta
                 _splitRange.value = if (meta.pageCount >= 3) "1-3" else "1"
-                true
-            } catch (e: Exception) {
-                false
             }
-            withContext(Dispatchers.Main) { onResult(success) }
+            onResult(meta != null)
         }
     }
 
@@ -299,7 +309,7 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun selectAllPagesForSplit() {
-        val total = _selectedSplitPdf.value?.pageCount ?: 12
+        val total = _selectedSplitPdf.value?.pageCount ?: 0
         _splitRange.value = if (total > 0) "1-$total" else "1"
     }
 
@@ -309,31 +319,39 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
         }
         val range = _splitRange.value.trim()
 
+        val sourceMeta = _selectedSplitPdf.value
+        if (sourceMeta == null) {
+            _errorMessage.value = "Choose a PDF to split first."
+            onInvalidRange()
+            return
+        }
+
+        val totalAvailable = sourceMeta.pageCount
+        val parsedIndices = PdfProcessor.parsePageRange(range, totalAvailable)
+        if (range.isBlank() || parsedIndices.isEmpty()) {
+            _splitInvalidInfo.value = range to totalAvailable
+            onInvalidRange()
+            return
+        }
+
         viewModelScope.launch {
-            val sourceMeta = _selectedSplitPdf.value ?: withContext(Dispatchers.IO) {
-                val samples = PdfProcessor.ensureSamplePdfs(getApplication())
-                val default = samples.firstOrNull { it.fileName.contains("Comprehensive") } ?: samples.first()
-                _selectedSplitPdf.value = default
-                default
-            }
-
-            val totalAvailable = sourceMeta.pageCount
-            val parsedIndices = PdfProcessor.parsePageRange(range, totalAvailable)
-            if (range.isBlank() || parsedIndices.isEmpty()) {
-                _splitInvalidInfo.value = range to totalAvailable
-                onInvalidRange()
-                return@launch
-            }
-
             val result = withContext(Dispatchers.IO) {
-                val outDir = File(getApplication<Application>().filesDir, "split").apply { mkdirs() }
-                val outFile = File(outDir, "Split_Pages_${System.currentTimeMillis()}.pdf")
+                try {
+                    val outDir = File(getApplication<Application>().filesDir, "split").apply { mkdirs() }
+                    val outFile = File(outDir, "Split_Pages_${System.currentTimeMillis()}.pdf")
+                    PdfProcessor.splitPdf(
+                        sourceFile = sourceMeta.file,
+                        pageRange = range,
+                        outputFile = outFile
+                    )
+                } catch (e: Exception) {
+                    null
+                }
+            }
 
-                PdfProcessor.splitPdf(
-                    sourceFile = sourceMeta.file,
-                    pageRange = range,
-                    outputFile = outFile
-                )
+            if (result == null) {
+                _errorMessage.value = "Could not extract those pages."
+                return@launch
             }
 
             _splitResult.value = result
@@ -361,15 +379,13 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
         _inputBitmap.value = bitmap
     }
 
-    fun loadInputBitmapFromUri(context: android.content.Context, uri: Uri) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val bmp = android.graphics.BitmapFactory.decodeStream(inputStream)
-                inputStream?.close()
+    fun loadInputBitmapFromUri(context: Context, uri: Uri) {
+        viewModelScope.launch {
+            val bmp = withContext(Dispatchers.IO) { BitmapLoader.decodeUri(context, uri) }
+            if (bmp != null) {
                 _inputBitmap.value = bmp
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } else {
+                _errorMessage.value = "Could not open that image."
             }
         }
     }
@@ -386,9 +402,11 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _centerEyeAlign = MutableStateFlow(true)
     val centerEyeAlign: StateFlow<Boolean> = _centerEyeAlign.asStateFlow()
 
-    private val _smartPhotoResult = MutableStateFlow<PhotoProcessor.PhotoProcessResult?>(null)
-    val smartPhotoResult: StateFlow<PhotoProcessor.PhotoProcessResult?> = _smartPhotoResult.asStateFlow()
-    val photoResult: StateFlow<PhotoProcessor.PhotoProcessResult?> = _smartPhotoResult.asStateFlow()
+    /** Shared by the Smart Photo and Resize result screens. */
+    private val _photoResult = MutableStateFlow<PhotoProcessor.PhotoProcessResult?>(null)
+    val photoResult: StateFlow<PhotoProcessor.PhotoProcessResult?> = _photoResult.asStateFlow()
+    val smartPhotoResult: StateFlow<PhotoProcessor.PhotoProcessResult?> = _photoResult.asStateFlow()
+    val resizeResult: StateFlow<PhotoProcessor.PhotoProcessResult?> = _photoResult.asStateFlow()
 
     fun setSmartPhotoPreset(preset: String) {
         _smartPhotoPreset.value = preset
@@ -415,29 +433,41 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun executeSmartPhoto(onSuccess: () -> Unit) {
+        val source = _inputBitmap.value
+        if (source == null) {
+            _errorMessage.value = "Select or capture a photo first."
+            return
+        }
+
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                val sampleBmp = _inputBitmap.value ?: PhotoProcessor.getSamplePortraitBitmap()
-                val outDir = File(getApplication<Application>().filesDir, "photos").apply { mkdirs() }
-                val outFile = File(outDir, "Passport_Photo_${System.currentTimeMillis()}.jpg")
-
-                PhotoProcessor.processSmartPhoto(
-                    context = getApplication(),
-                    inputBitmap = sampleBmp,
-                    preset = _smartPhotoPreset.value,
-                    replaceWithPureWhiteBg = _replaceWhiteBg.value,
-                    centerAlignEyeLevel = _centerEyeAlign.value,
-                    outputFile = outFile
-                )
+                try {
+                    val outDir = File(getApplication<Application>().filesDir, "photos").apply { mkdirs() }
+                    val outFile = File(outDir, "Passport_Photo_${System.currentTimeMillis()}.jpg")
+                    PhotoProcessor.processSmartPhoto(
+                        inputBitmap = source,
+                        preset = _smartPhotoPreset.value,
+                        replaceWithPureWhiteBg = _replaceWhiteBg.value,
+                        centerAlignEyeLevel = _centerEyeAlign.value,
+                        outputFile = outFile
+                    )
+                } catch (e: Exception) {
+                    null
+                }
             }
 
-            _smartPhotoResult.value = result
+            if (result == null) {
+                _errorMessage.value = "Could not process this photo."
+                return@launch
+            }
+
+            _photoResult.value = result
 
             repository.insert(
                 DocumentEntity(
                     title = "Passport_Photo_Biometric.jpg",
                     type = "SMART_PHOTO",
-                    details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)} (< 50KB Compliant)",
+                    details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)}",
                     filePath = result.file.absolutePath
                 )
             )
@@ -458,9 +488,6 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _maintainAspect = MutableStateFlow(true)
     val maintainAspect: StateFlow<Boolean> = _maintainAspect.asStateFlow()
 
-    private val _resizeResult = MutableStateFlow<PhotoProcessor.PhotoProcessResult?>(null)
-    val resizeResult: StateFlow<PhotoProcessor.PhotoProcessResult?> = _resizeResult.asStateFlow()
-
     fun setResizeDimensions(w: String, h: String) {
         _resizeWidth.value = w
         _resizeHeight.value = h
@@ -478,30 +505,43 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     ) {
         _resizeWidth.value = widthPx.toString()
         _resizeHeight.value = heightPx.toString()
-        executeResizePhoto(onComplete)
+        executeResizePhoto(targetKb, onComplete)
     }
 
-    fun executeResizePhoto(onSuccess: () -> Unit) {
+    fun executeResizePhoto(targetKb: Int = 0, onSuccess: () -> Unit) {
+        val source = _inputBitmap.value
+        if (source == null) {
+            _errorMessage.value = "Select or capture a photo first."
+            return
+        }
+
         viewModelScope.launch {
             val w = _resizeWidth.value.toIntOrNull() ?: 600
             val h = _resizeHeight.value.toIntOrNull() ?: 600
 
             val result = withContext(Dispatchers.IO) {
-                val sampleBmp = _inputBitmap.value ?: PhotoProcessor.getSamplePortraitBitmap()
-                val outDir = File(getApplication<Application>().filesDir, "photos").apply { mkdirs() }
-                val outFile = File(outDir, "Resized_${w}x${h}_${System.currentTimeMillis()}.jpg")
-
-                PhotoProcessor.resizePhoto(
-                    inputBitmap = sampleBmp,
-                    targetWidth = w,
-                    targetHeight = h,
-                    maintainAspectRatio = _maintainAspect.value,
-                    outputFile = outFile
-                )
+                try {
+                    val outDir = File(getApplication<Application>().filesDir, "photos").apply { mkdirs() }
+                    val outFile = File(outDir, "Resized_${w}x${h}_${System.currentTimeMillis()}.jpg")
+                    PhotoProcessor.resizePhoto(
+                        inputBitmap = source,
+                        targetWidth = w,
+                        targetHeight = h,
+                        maintainAspectRatio = _maintainAspect.value,
+                        targetKb = targetKb,
+                        outputFile = outFile
+                    )
+                } catch (e: Exception) {
+                    null
+                }
             }
 
-            _resizeResult.value = result
-            _smartPhotoResult.value = result
+            if (result == null) {
+                _errorMessage.value = "Could not resize this photo."
+                return@launch
+            }
+
+            _photoResult.value = result
 
             repository.insert(
                 DocumentEntity(
@@ -522,35 +562,40 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     private val _signatureResult = MutableStateFlow<PhotoProcessor.SignatureProcessResult?>(null)
     val signatureResult: StateFlow<PhotoProcessor.SignatureProcessResult?> = _signatureResult.asStateFlow()
 
+    /**
+     * Renders drawn strokes. [padWidth]/[padHeight] describe the on-screen pad the
+     * strokes were captured in, which is what lets them be mapped into the much
+     * smaller output image instead of overflowing it.
+     */
     fun executePrepareSignature(
-        points: List<Offset>,
+        strokes: List<List<Offset>>,
+        padWidth: Float,
+        padHeight: Float,
         inkColor: Color,
         onSuccess: () -> Unit
     ) {
+        if (strokes.none { it.isNotEmpty() } || padWidth <= 0f || padHeight <= 0f) {
+            _errorMessage.value = "Draw your signature first."
+            return
+        }
+
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                val outDir = File(getApplication<Application>().filesDir, "signatures").apply { mkdirs() }
-                val outFile = File(outDir, "Signature_${System.currentTimeMillis()}.jpg")
-
-                PhotoProcessor.processSignatureFromPoints(
-                    points = points,
-                    inkColorHex = inkColor.toArgb(),
-                    outputFile = outFile
-                )
+                try {
+                    val outDir = File(getApplication<Application>().filesDir, "signatures").apply { mkdirs() }
+                    val outFile = File(outDir, "Signature_${System.currentTimeMillis()}.jpg")
+                    PhotoProcessor.processSignatureFromStrokes(
+                        strokes = strokes,
+                        sourceWidth = padWidth,
+                        sourceHeight = padHeight,
+                        inkColorHex = inkColor.toArgb(),
+                        outputFile = outFile
+                    )
+                } catch (e: Exception) {
+                    null
+                }
             }
-
-            _signatureResult.value = result
-
-            repository.insert(
-                DocumentEntity(
-                    title = "Prepared_Signature.jpg",
-                    type = "SIGNATURE",
-                    details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)} (10-20 KB Spec Passed)",
-                    filePath = result.file.absolutePath
-                )
-            )
-
-            onSuccess()
+            finishSignature(result, onSuccess)
         }
     }
 
@@ -561,58 +606,71 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     ) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                val outDir = File(getApplication<Application>().filesDir, "signatures").apply { mkdirs() }
-                val outFile = File(outDir, "Signature_Photo_${System.currentTimeMillis()}.jpg")
-
-                PhotoProcessor.processSignatureFromPhoto(
-                    photoBitmap = photoBitmap,
-                    outputFile = outFile
-                )
+                try {
+                    PhotoProcessor.processSignatureFromPhoto(
+                        photoBitmap = photoBitmap,
+                        outputFile = newSignatureFile()
+                    )
+                } catch (e: Exception) {
+                    null
+                }
             }
-
-            _signatureResult.value = result
-
-            repository.insert(
-                DocumentEntity(
-                    title = "Prepared_Signature.jpg",
-                    type = "SIGNATURE",
-                    details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)} (10-20 KB Spec Passed)",
-                    filePath = result.file.absolutePath
-                )
-            )
-
-            onSuccess()
+            finishSignature(result, onSuccess)
         }
     }
 
     /** Prepares a signature from a gallery-picked photo of a pen-and-paper signature. */
     fun executePrepareSignatureFromGalleryUri(
-        context: android.content.Context,
+        context: Context,
         uri: Uri,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                val bitmap = context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-                    ?: PhotoProcessor.getSamplePortraitBitmap()
-                val outDir = File(getApplication<Application>().filesDir, "signatures").apply { mkdirs() }
-                val outFile = File(outDir, "Signature_Photo_${System.currentTimeMillis()}.jpg")
-                PhotoProcessor.processSignatureFromPhoto(photoBitmap = bitmap, outputFile = outFile)
+                val bitmap = BitmapLoader.decodeUri(context, uri)
+                if (bitmap == null) {
+                    null
+                } else {
+                    try {
+                        PhotoProcessor.processSignatureFromPhoto(
+                            photoBitmap = bitmap,
+                            outputFile = newSignatureFile()
+                        )
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
             }
-
-            _signatureResult.value = result
-
-            repository.insert(
-                DocumentEntity(
-                    title = "Prepared_Signature.jpg",
-                    type = "SIGNATURE",
-                    details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)} (10-20 KB Spec Passed)",
-                    filePath = result.file.absolutePath
-                )
-            )
-
-            onSuccess()
+            finishSignature(result, onSuccess)
         }
+    }
+
+    private fun newSignatureFile(): File {
+        val outDir = File(getApplication<Application>().filesDir, "signatures").apply { mkdirs() }
+        return File(outDir, "Signature_${System.currentTimeMillis()}.jpg")
+    }
+
+    private suspend fun finishSignature(
+        result: PhotoProcessor.SignatureProcessResult?,
+        onSuccess: () -> Unit
+    ) {
+        if (result == null) {
+            _errorMessage.value = "Could not prepare the signature."
+            return
+        }
+
+        _signatureResult.value = result
+
+        repository.insert(
+            DocumentEntity(
+                title = "Prepared_Signature.jpg",
+                type = "SIGNATURE",
+                details = "${result.width}x${result.height} px • ${FileHelper.formatFileSize(result.sizeBytes)}",
+                filePath = result.file.absolutePath
+            )
+        )
+
+        onSuccess()
     }
 
     // -------------------------------------------------------------
@@ -639,18 +697,19 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     /** Adds one or more gallery-picked images as pages for the Image to PDF flow. */
-    fun addImageToPdfPagesFromUris(context: android.content.Context, uris: List<Uri>) {
+    fun addImageToPdfPagesFromUris(context: Context, uris: List<Uri>) {
         if (uris.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val bitmaps = uris.mapNotNull { uri ->
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
-                } catch (e: Exception) {
-                    null
-                }
+        viewModelScope.launch {
+            val bitmaps = withContext(Dispatchers.IO) {
+                uris.mapNotNull { BitmapLoader.decodeUri(context, it) }
             }
             if (bitmaps.isNotEmpty()) {
                 _imageToPdfPages.value = _imageToPdfPages.value + bitmaps
+            }
+            val skipped = uris.size - bitmaps.size
+            if (skipped > 0) {
+                _errorMessage.value =
+                    "$skipped image${if (skipped == 1) "" else "s"} could not be opened."
             }
         }
     }
@@ -673,21 +732,31 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun executeCreatePdfFromImages(onSuccess: () -> Unit) {
+        val pages = _imageToPdfPages.value
+        if (pages.isEmpty()) {
+            _errorMessage.value = "Add at least one image first."
+            return
+        }
+
         viewModelScope.launch {
-            val pagesToUse = _imageToPdfPages.value.ifEmpty {
-                listOf(PhotoProcessor.getSamplePortraitBitmap(), PhotoProcessor.getSamplePortraitBitmap())
+            val resultFile = withContext(Dispatchers.IO) {
+                try {
+                    val outDir = File(getApplication<Application>().filesDir, "pdf").apply { mkdirs() }
+                    val outFile = File(outDir, "Scanned_Application_ID_${System.currentTimeMillis()}.pdf")
+                    PdfProcessor.imagesToPdf(
+                        bitmaps = pages,
+                        format = _imageToPdfFormat.value,
+                        orientation = _imageToPdfOrientation.value,
+                        outputFile = outFile
+                    )
+                } catch (e: Exception) {
+                    null
+                }
             }
 
-            val resultFile = withContext(Dispatchers.IO) {
-                val outDir = File(getApplication<Application>().filesDir, "pdf").apply { mkdirs() }
-                val outFile = File(outDir, "Scanned_Application_ID_${System.currentTimeMillis()}.pdf")
-
-                PdfProcessor.imagesToPdf(
-                    bitmaps = pagesToUse,
-                    format = _imageToPdfFormat.value,
-                    orientation = _imageToPdfOrientation.value,
-                    outputFile = outFile
-                )
+            if (resultFile == null) {
+                _errorMessage.value = "Could not create the PDF."
+                return@launch
             }
 
             _imageToPdfResult.value = resultFile
@@ -696,7 +765,7 @@ class FormReadyViewModel(application: Application) : AndroidViewModel(applicatio
                 DocumentEntity(
                     title = "Scanned_Application_ID.pdf",
                     type = "IMAGE_TO_PDF",
-                    details = "${pagesToUse.size} Pages • ${FileHelper.formatFileSize(resultFile.length())}",
+                    details = "${pages.size} Pages • ${FileHelper.formatFileSize(resultFile.length())}",
                     filePath = resultFile.absolutePath
                 )
             )

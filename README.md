@@ -42,9 +42,13 @@ it to verify every future update to this app.
   Image to PDF), each a set of Jetpack Compose screens.
 - `app/src/main/java/com/example/viewmodel/FormReadyViewModel.kt` — all app
   state and orchestration.
-- `app/src/main/java/com/example/util/{PdfProcessor,PhotoProcessor,FileHelper}.kt` —
-  the actual on-device PDF/image processing (uses Android's built-in
-  `PdfRenderer`/`PdfDocument` and `Bitmap` APIs — no third-party libraries).
+- `app/src/main/java/com/example/util/{PdfProcessor,PhotoProcessor,BitmapLoader,FileHelper}.kt` —
+  the actual on-device PDF/image processing. Merging and splitting copy pages
+  with [PDFBox-Android](https://github.com/TomRoush/PdfBox-Android) so text stays
+  selectable and nothing is re-rendered; compression deliberately rasterizes
+  (via Android's `PdfRenderer`) and re-encodes pages as JPEG, which is the only
+  step that trades quality for size. `BitmapLoader` bounds every decode so large
+  camera images cannot exhaust the heap, and applies EXIF rotation.
 - `app/src/main/java/com/example/data` — a small Room database that tracks
   recently prepared documents for the Home screen's history list.
 

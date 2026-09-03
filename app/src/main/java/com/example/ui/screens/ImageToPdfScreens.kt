@@ -159,7 +159,7 @@ fun ImageToPdfScreen(
 
             if (pages.isEmpty()) {
                 Text(
-                    text = "No scans added yet — a sample 2-page document will be used until you add your own.",
+                    text = "No scans added yet — add images from your gallery or scan pages with the camera.",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -250,6 +250,7 @@ fun ImageToPdfScreen(
                         onCreatePdf()
                     }
                 },
+                enabled = viewModel == null || pages.isNotEmpty(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier

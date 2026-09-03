@@ -294,6 +294,7 @@ fun SmartPhotoRequirementsScreen(
                         onMakeItFit()
                     }
                 },
+                enabled = viewModel == null || inputBitmap != null,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BluePrimary),
                 modifier = Modifier
