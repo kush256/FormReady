@@ -25,6 +25,14 @@ jobs:
       - name: Grant execute permission to gradlew
         run: chmod +x gradlew
 
+      - name: Generate debug keystore
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkey -v -keystore debug.keystore -storepass android \
+              -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
+              -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
@@ -35,12 +43,20 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
-      - name: Build release APK (unsigned)
-        run: ./gradlew assembleRelease
-
-      - name: Upload release APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-apk
-          path: app/build/outputs/apk/release/app-release.apk
-          retention-days: 30
+      # Release builds need a real upload keystore (KEYSTORE_PATH, STORE_PASSWORD,
+      # KEY_PASSWORD secrets) — see README.md "Release builds" for how to generate
+      # one. Re-enable this once that keystore exists and its secrets are set in
+      # the repo's Settings -> Secrets and variables -> Actions.
+      # - name: Build release APK
+      #   env:
+      #     KEYSTORE_PATH: ${{ github.workspace }}/upload-key.jks
+      #     STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+      #     KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      #   run: ./gradlew assembleRelease
+      #
+      # - name: Upload release APK artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: release-apk
+      #     path: app/build/outputs/apk/release/app-release.apk
+      #     retention-days: 30
