@@ -1,6 +1,6 @@
 export function PrivacyFooter({ className = '' }: { className?: string }) {
   return (
-    <div className={`flex items-center justify-center gap-1.5 py-4 text-xs text-[var(--color-success)] ${className}`}>
+    <div className={`flex items-center justify-center gap-1.5 py-4 text-xs text-[var(--ok)] ${className}`}>
       <svg
         width="15"
         height="15"

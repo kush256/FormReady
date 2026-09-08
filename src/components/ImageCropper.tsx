@@ -127,7 +127,7 @@ export function ImageCropper({ img, aspect, background = '#e5e7eb', onCropChange
     <div className="w-full">
       <div
         ref={containerRef}
-        className="relative w-full touch-none overflow-hidden rounded-xl border border-[var(--color-border)] select-none"
+        className="relative w-full touch-none overflow-hidden rounded-xl border border-[var(--line)] select-none"
         style={{ height: size.h, background }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -154,7 +154,7 @@ export function ImageCropper({ img, aspect, background = '#e5e7eb', onCropChange
         />
       </div>
       <div className="mt-3 flex items-center gap-3">
-        <span className="text-xs text-[var(--color-ink-muted)]">Zoom</span>
+        <span className="text-xs text-[var(--ink-2)]">Zoom</span>
         <input
           type="range"
           min={1}
@@ -162,10 +162,10 @@ export function ImageCropper({ img, aspect, background = '#e5e7eb', onCropChange
           step={0.01}
           value={zoom}
           onChange={(e) => applyZoom(parseFloat(e.target.value))}
-          className="w-full accent-[var(--color-primary)]"
+          className="w-full accent-[var(--accent)]"
         />
       </div>
-      <p className="mt-1 text-center text-xs text-[var(--color-ink-muted)]">Drag to reposition, pinch or use the slider to zoom</p>
+      <p className="mt-1 text-center text-xs text-[var(--ink-2)]">Drag to reposition, pinch or use the slider to zoom</p>
     </div>
   )
 }

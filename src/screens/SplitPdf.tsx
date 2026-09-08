@@ -4,10 +4,9 @@ import { PrivacyFooter } from '../components/PrivacyFooter'
 import { Button } from '../components/Button'
 import { pickPdfs } from '../lib/picker'
 import { renderPageThumbnails, extractPages } from '../lib/pdf'
-import { saveAndShare } from '../lib/file'
-import { formatBytes } from '../lib/format'
 import { bytesToBlob } from '../lib/bytes'
-import { DownloadIcon } from '../components/Icons'
+import { ProgressPanel } from '../components/ProgressPanel'
+import { ResultView } from '../components/ResultView'
 
 type Step = 'pick' | 'loading' | 'select' | 'processing' | 'result'
 
@@ -99,29 +98,24 @@ export function SplitPdf() {
     setStep('pick')
   }
 
-  async function onSave() {
-    if (!resultBlob) return
-    await saveAndShare(resultBlob, `split-${file?.name ?? 'document.pdf'}`)
-  }
-
   return (
     <div className="flex min-h-screen flex-col">
       <ScreenHeader title="Split PDF" />
 
       <main className="flex-1 space-y-5 px-5 py-4">
         {error && (
-          <p className="rounded-xl bg-[var(--color-danger-soft)] px-4 py-3 text-sm text-[var(--color-danger)]">{error}</p>
+          <p className="rounded-xl bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">{error}</p>
         )}
 
         {step === 'pick' && (
           <>
             <div>
-              <h2 className="mb-1 text-lg font-bold text-[var(--color-ink)]">Extract PDF pages</h2>
-              <p className="text-sm text-[var(--color-ink-muted)]">Choose a PDF, then pick the pages you need.</p>
+              <h2 className="mb-1 text-lg font-bold text-[var(--ink)]">Extract PDF pages</h2>
+              <p className="text-sm text-[var(--ink-2)]">Choose a PDF, then pick the pages you need.</p>
             </div>
             <button
               onClick={pick}
-              className="flex w-full flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-[var(--color-border)] py-10 text-[var(--color-primary)]"
+              className="flex w-full flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-[var(--line)] py-10 text-[var(--accent)]"
             >
               <span className="text-sm font-medium">Select PDF</span>
             </button>
@@ -129,17 +123,14 @@ export function SplitPdf() {
         )}
 
         {step === 'loading' && (
-          <div className="flex flex-col items-center justify-center gap-3 py-16">
-            <div className="h-10 w-10 animate-spin rounded-full border-4 border-[var(--color-primary-soft)] border-t-[var(--color-primary)]" />
-            <p className="text-sm text-[var(--color-ink-muted)]">Loading pages…</p>
-          </div>
+          <ProgressPanel label="Loading pages" detail="Rendering thumbnails" />
         )}
 
         {step === 'select' && (
           <>
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-[var(--color-ink)]">{selected.size} of {thumbs.length} selected</h2>
-              <div className="flex gap-3 text-xs font-medium text-[var(--color-primary)]">
+              <h2 className="text-lg font-bold text-[var(--ink)]">{selected.size} of {thumbs.length} selected</h2>
+              <div className="flex gap-3 text-xs font-medium text-[var(--accent)]">
                 <button onClick={() => setSelected(new Set(thumbs.map((_, i) => i)))}>All</button>
                 <button onClick={() => setSelected(new Set())}>None</button>
               </div>
@@ -151,7 +142,7 @@ export function SplitPdf() {
                 placeholder="e.g. 1-3, 5"
                 value={rangeInput}
                 onChange={(e) => setRangeInput(e.target.value)}
-                className="flex-1 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm"
+                className="flex-1 rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
               />
               <Button variant="secondary" onClick={applyRange}>
                 Apply
@@ -163,12 +154,12 @@ export function SplitPdf() {
                 <button
                   key={i}
                   onClick={() => toggle(i)}
-                  className={`relative overflow-hidden rounded-lg border-2 ${selected.has(i) ? 'border-[var(--color-primary)]' : 'border-[var(--color-border)]'}`}
+                  className={`relative overflow-hidden rounded-lg border-2 ${selected.has(i) ? 'border-[var(--accent)]' : 'border-[var(--line)]'}`}
                 >
                   <img src={src} alt={`Page ${i + 1}`} className="w-full" />
                   <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">{i + 1}</span>
                   {selected.has(i) && (
-                    <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--color-primary)] text-[10px] text-white">✓</span>
+                    <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] text-white">✓</span>
                   )}
                 </button>
               ))}
@@ -181,26 +172,21 @@ export function SplitPdf() {
         )}
 
         {step === 'processing' && (
-          <div className="flex flex-col items-center justify-center gap-3 py-16">
-            <div className="h-10 w-10 animate-spin rounded-full border-4 border-[var(--color-primary-soft)] border-t-[var(--color-primary)]" />
-            <p className="text-sm text-[var(--color-ink-muted)]">Extracting pages…</p>
-          </div>
+          <ProgressPanel label="Extracting pages" detail={`${selected.size} of ${thumbs.length}`} />
         )}
 
         {step === 'result' && resultBlob && (
-          <>
-            <h2 className="text-lg font-bold text-[var(--color-ink)]">Your PDF is ready</h2>
-            <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-center">
-              <p className="text-sm text-[var(--color-ink)]">{selected.size} page{selected.size !== 1 ? 's' : ''}</p>
-              <p className="text-xs text-[var(--color-ink-muted)]">{formatBytes(resultBlob.size)}</p>
-            </div>
-            <Button fullWidth onClick={onSave} icon={<DownloadIcon width={18} height={18} />}>
-              Save / Share
-            </Button>
-            <Button fullWidth variant="secondary" onClick={reset}>
-              Start Over
-            </Button>
-          </>
+          <ResultView
+            heading="Your PDF is ready"
+            blob={resultBlob}
+            filename={`split-${file?.name ?? 'document.pdf'}`}
+            summary={`${selected.size} page${selected.size !== 1 ? 's' : ''}`}
+            checks={[
+              { label: `${selected.size} of ${thumbs.length} pages`, ok: true },
+              { label: 'PDF', ok: true },
+            ]}
+            onStartOver={reset}
+          />
         )}
       </main>
 

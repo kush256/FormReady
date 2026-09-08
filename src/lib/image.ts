@@ -11,6 +11,62 @@ export function loadImage(source: File | Blob | string): Promise<HTMLImageElemen
   })
 }
 
+/**
+ * Longest edge we keep from a source photo. Form requirements top out in the
+ * low hundreds of pixels, so anything beyond this is memory and decode time
+ * spent on detail that gets thrown away at crop time.
+ */
+const MAX_SOURCE_EDGE = 2400
+
+/**
+ * Decodes a photo off the main thread and caps its size before it ever
+ * reaches the DOM. A 12-megapixel phone photo decoded straight into an <img>
+ * blocks the main thread and holds ~48 MB; this keeps it to a few MB.
+ */
+export async function loadCappedImage(file: Blob): Promise<HTMLImageElement> {
+  if (typeof createImageBitmap !== 'function') {
+    return loadImage(file)
+  }
+
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    return loadImage(file)
+  }
+
+  const longestEdge = Math.max(bitmap.width, bitmap.height)
+  if (longestEdge <= MAX_SOURCE_EDGE) {
+    bitmap.close()
+    return loadImage(file)
+  }
+
+  const ratio = MAX_SOURCE_EDGE / longestEdge
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.round(bitmap.width * ratio)
+  canvas.height = Math.round(bitmap.height * ratio)
+  const ctx = canvas.getContext('2d')!
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+  bitmap.close()
+
+  const blob = await canvasToBlob(canvas, 'image/jpeg', 0.92)
+  canvas.width = 0
+  canvas.height = 0
+  return loadImage(blob)
+}
+
+/**
+ * Roughly the smallest a JPEG of these dimensions can get before it stops
+ * being usable. Used to catch impossible requirements before any work starts,
+ * so it errs low — better to attempt a tight target than to refuse a possible
+ * one. Photographic JPEGs bottom out near 0.07 bytes per pixel.
+ */
+export function estimateSmallestJpegBytes(width: number, height: number): number {
+  return Math.max(2048, Math.round(width * height * 0.07))
+}
+
 export function canvasToBlob(
   canvas: HTMLCanvasElement,
   type: string,
@@ -132,6 +188,90 @@ export function whitenBackground(canvas: HTMLCanvasElement, threshold = 225): vo
     }
   }
   ctx.putImageData(data, 0, 0)
+}
+
+export interface InkAnalysis {
+  /** Enough of the ink reads as blue that a portal is likely to reject it. */
+  isBlue: boolean
+  /** Share of the image that is ink rather than paper. */
+  inkRatio: number
+}
+
+const INK_LUMINANCE = 165
+
+/**
+ * Looks at the colour of the ink in a signature.
+ *
+ * SSC, UPSC and IBPS notifications ask for signatures in black ink, and a blue
+ * one is a widely reported cause of an "unclear image" rejection. Cheap to
+ * detect: ink pixels whose blue channel runs well ahead of their red.
+ */
+export function analyseInk(canvas: HTMLCanvasElement): InkAnalysis {
+  const ctx = canvas.getContext('2d')!
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+
+  let inkPixels = 0
+  let bluePixels = 0
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    const luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    if (luminance >= INK_LUMINANCE) continue
+    inkPixels++
+    if (b - r > 24 && b > g) bluePixels++
+  }
+
+  const totalPixels = data.length / 4
+  return {
+    isBlue: inkPixels > 0 && bluePixels / inkPixels > 0.35,
+    inkRatio: totalPixels > 0 ? inkPixels / totalPixels : 0,
+  }
+}
+
+/**
+ * Turns coloured ink black and cleans the paper to white, in place.
+ *
+ * Greyscales first, then stretches the levels between the darkest and
+ * lightest parts actually present, so antialiased strokes stay smooth rather
+ * than turning into jagged pure-black pixels.
+ */
+export function forceInkBlack(canvas: HTMLCanvasElement): void {
+  const ctx = canvas.getContext('2d')!
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const data = image.data
+
+  const histogram = new Uint32Array(256)
+  const luminances = new Uint8ClampedArray(data.length / 4)
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const luminance = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+    luminances[p] = luminance
+    histogram[luminances[p]]++
+  }
+
+  const total = luminances.length
+  const inkLevel = percentile(histogram, total, 0.02)
+  const paperLevel = percentile(histogram, total, 0.92)
+  const span = Math.max(1, paperLevel - inkLevel)
+
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const stretched = Math.max(0, Math.min(255, ((luminances[p] - inkLevel) / span) * 255))
+    data[i] = stretched
+    data[i + 1] = stretched
+    data[i + 2] = stretched
+    data[i + 3] = 255
+  }
+  ctx.putImageData(image, 0, 0)
+}
+
+function percentile(histogram: Uint32Array, total: number, fraction: number): number {
+  const goal = total * fraction
+  let seen = 0
+  for (let level = 0; level < histogram.length; level++) {
+    seen += histogram[level]
+    if (seen >= goal) return level
+  }
+  return 255
 }
 
 export function blobToDataUrl(blob: Blob): Promise<string> {

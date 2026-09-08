@@ -1,19 +1,22 @@
 import { useNavigate } from 'react-router-dom'
 
-export function ScreenHeader({ title }: { title: string }) {
+export function ScreenHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   const navigate = useNavigate()
   return (
-    <header className="safe-top sticky top-0 z-10 flex items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-surface)]/95 px-3 py-3 backdrop-blur">
+    <header className="safe-top sticky top-0 z-10 flex items-center gap-1 border-b border-[var(--line)] bg-[var(--surface)]/92 px-3 py-2.5 backdrop-blur">
       <button
         onClick={() => navigate(-1)}
         aria-label="Back"
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--color-ink)] active:bg-black/5"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--ink)] active:bg-[var(--surface-sunk)]"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M15 18l-6-6 6-6" />
         </svg>
       </button>
-      <h1 className="truncate text-base font-semibold text-[var(--color-ink)]">{title}</h1>
+      <div className="min-w-0">
+        <h1 className="truncate text-[15px] font-bold tracking-tight text-[var(--ink)]">{title}</h1>
+        {subtitle && <p className="truncate font-mono text-[11px] text-[var(--ink-2)]">{subtitle}</p>}
+      </div>
     </header>
   )
 }

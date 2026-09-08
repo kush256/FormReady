@@ -13,7 +13,7 @@ const SplitPdf = lazy(() => import('./screens/SplitPdf').then((m) => ({ default:
 function ScreenFallback() {
   return (
     <div className="flex min-h-screen items-center justify-center">
-      <div className="h-10 w-10 animate-spin rounded-full border-4 border-[var(--color-primary-soft)] border-t-[var(--color-primary)]" />
+      <div className="h-10 w-10 animate-spin rounded-full border-4 border-[var(--accent-soft)] border-t-[var(--accent)]" />
     </div>
   )
 }
@@ -21,7 +21,7 @@ function ScreenFallback() {
 function App() {
   return (
     <HashRouter>
-      <div className="mx-auto min-h-screen w-full max-w-md bg-[var(--color-bg)]">
+      <div className="mx-auto min-h-screen w-full max-w-md bg-[var(--bg)]">
         <Suspense fallback={<ScreenFallback />}>
           <Routes>
             <Route path="/" element={<Home />} />

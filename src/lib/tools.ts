@@ -13,6 +13,8 @@ export interface ToolDef {
   path: string
   name: string
   description: string
+  /** The requirement this tool most often satisfies, shown as a spec chip. */
+  spec?: string
   icon: ComponentType<SVGProps<SVGSVGElement>>
 }
 
@@ -22,6 +24,7 @@ export const QUICK_TOOLS: ToolDef[] = [
     path: '/signature-maker',
     name: 'Signature Maker',
     description: 'Prepare form signatures',
+    spec: '140×60',
     icon: SignatureIcon,
   },
   {

@@ -126,6 +126,21 @@ export const ReorderIcon = (p: IconProps) => (
   </svg>
 )
 
+export const ShareIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M12 15V4" />
+    <path d="M8 8l4-4 4 4" />
+    <path d="M5 13v6a1 1 0 001 1h12a1 1 0 001-1v-6" />
+  </svg>
+)
+
+export const SearchIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <circle cx="11" cy="11" r="7" />
+    <path d="M20 20l-3.5-3.5" />
+  </svg>
+)
+
 export const DownloadIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M12 3v12" />

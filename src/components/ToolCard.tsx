@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import type { ToolDef } from '../lib/tools'
 import { ChevronRightIcon } from './Icons'
+import { SpecChip } from './SpecChip'
 
 export function ToolCard({ tool }: { tool: ToolDef }) {
   const navigate = useNavigate()
@@ -8,16 +9,17 @@ export function ToolCard({ tool }: { tool: ToolDef }) {
   return (
     <button
       onClick={() => navigate(tool.path)}
-      className="flex w-full items-center gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4 text-left shadow-sm active:bg-black/[0.02]"
+      className="flex w-full items-center gap-3.5 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-3.5 text-left shadow-[var(--shadow-card)] transition-colors active:bg-[var(--surface-sunk)]"
     >
-      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--color-primary-soft)] text-[var(--color-primary)]">
-        <Icon width={22} height={22} />
+      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
+        <Icon width={21} height={21} />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-semibold text-[var(--color-ink)]">{tool.name}</span>
-        <span className="block truncate text-xs text-[var(--color-ink-muted)]">{tool.description}</span>
+        <span className="block truncate text-[15px] font-bold tracking-tight text-[var(--ink)]">{tool.name}</span>
+        <span className="block truncate text-xs text-[var(--ink-2)]">{tool.description}</span>
       </span>
-      <ChevronRightIcon width={18} height={18} className="shrink-0 text-[var(--color-ink-muted)]" />
+      {tool.spec && <SpecChip icon={false}>{tool.spec}</SpecChip>}
+      <ChevronRightIcon width={17} height={17} className="shrink-0 text-[var(--ink-3)]" />
     </button>
   )
 }

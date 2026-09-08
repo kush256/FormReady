@@ -4,57 +4,57 @@ import { PrivacyFooter } from '../components/PrivacyFooter'
 import { Button } from '../components/Button'
 import { SourceButtons } from '../components/SourceButtons'
 import { ImageCropper } from '../components/ImageCropper'
-import { StatusChip } from '../components/StatusChip'
+import { ProgressPanel } from '../components/ProgressPanel'
+import { ResultView } from '../components/ResultView'
+import { SpecChip } from '../components/SpecChip'
+import { Notice } from '../components/Notice'
 import { captureFromCamera, pickImages } from '../lib/picker'
-import { loadImage, renderCrop, compressToTarget, type CropRect } from '../lib/image'
-import { saveAndShare } from '../lib/file'
-import { formatBytes, kbToBytes } from '../lib/format'
-import { DownloadIcon } from '../components/Icons'
+import { loadCappedImage, renderCrop, compressToTarget, type CropRect } from '../lib/image'
+import { validateRequirement, type ImageRequirement } from '../lib/requirements'
+import { kbToBytes } from '../lib/format'
 
-interface Preset {
+interface Preset extends ImageRequirement {
   label: string
-  width: number
-  height: number
-  maxKb: number
+  note: string
 }
 
+// Common starting points. Always confirm against the live notification for
+// the exam being applied to — portals do change these between cycles.
 const PRESETS: Preset[] = [
-  { label: 'Passport Photo', width: 200, height: 230, maxKb: 50 },
-  { label: 'Passport Photo (large)', width: 413, height: 531, maxKb: 100 },
-  { label: 'ID / Application Photo', width: 300, height: 300, maxKb: 100 },
-  { label: 'Exam Admit Card Photo', width: 150, height: 200, maxKb: 30 },
+  { label: 'SSC / IBPS photo', note: 'Most recruitment portals', width: 200, height: 230, maxKb: 50 },
+  { label: 'UPSC photo', note: 'Square crop', width: 350, height: 350, maxKb: 50 },
+  { label: 'Passport size', note: 'Larger print-quality photo', width: 413, height: 531, maxKb: 100 },
+  { label: 'Admit card photo', note: 'Smaller exam portals', width: 150, height: 200, maxKb: 30 },
 ]
 
-type Step = 'requirement' | 'source' | 'crop' | 'processing' | 'result'
+type Step = 'requirement' | 'source' | 'crop' | 'working' | 'result'
 
 export function SmartPhoto() {
   const [step, setStep] = useState<Step>('requirement')
   const [presetIndex, setPresetIndex] = useState(0)
-  const [customWidth, setCustomWidth] = useState(200)
-  const [customHeight, setCustomHeight] = useState(230)
-  const [customMaxKb, setCustomMaxKb] = useState(50)
   const [useCustom, setUseCustom] = useState(false)
+  const [custom, setCustom] = useState<ImageRequirement>({ width: 200, height: 230, maxKb: 50 })
 
   const [img, setImg] = useState<HTMLImageElement | null>(null)
   const [crop, setCrop] = useState<CropRect | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sourceBytes, setSourceBytes] = useState(0)
 
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [metSize, setMetSize] = useState(true)
 
-  const target = useCustom
-    ? { width: customWidth, height: customHeight, maxKb: customMaxKb }
-    : PRESETS[presetIndex]
-
+  const target: ImageRequirement = useCustom ? custom : PRESETS[presetIndex]
   const aspect = useMemo(() => target.width / target.height, [target.width, target.height])
+  const issue = useMemo(() => (useCustom ? validateRequirement(custom) : null), [useCustom, custom])
 
   async function handlePicked(files: File[]) {
     const file = files[0]
     if (!file) return
     try {
       setError(null)
-      const image = await loadImage(file)
+      setSourceBytes(file.size)
+      const image = await loadCappedImage(file)
       setImg(image)
       setStep('crop')
     } catch {
@@ -73,7 +73,7 @@ export function SmartPhoto() {
 
   async function process() {
     if (!img || !crop) return
-    setStep('processing')
+    setStep('working')
     try {
       const canvas = renderCrop(img, crop, target.width, target.height, '#ffffff')
       const result = await compressToTarget(canvas, { maxBytes: kbToBytes(target.maxKb) })
@@ -82,7 +82,7 @@ export function SmartPhoto() {
       setMetSize(result.metTarget)
       setStep('result')
     } catch {
-      setError('Something went wrong while processing the photo.')
+      setError('Something went wrong while preparing the photo.')
       setStep('crop')
     }
   }
@@ -96,94 +96,103 @@ export function SmartPhoto() {
     setStep('requirement')
   }
 
-  async function onSave() {
-    if (!resultBlob) return
-    await saveAndShare(resultBlob, `smart-photo-${target.width}x${target.height}.jpg`)
-  }
-
   return (
     <div className="flex min-h-screen flex-col">
-      <ScreenHeader title="Smart Photo" />
+      <ScreenHeader
+        title="Smart Photo"
+        subtitle={step === 'requirement' ? undefined : `${target.width}×${target.height} px · ≤ ${target.maxKb} KB`}
+      />
 
       <main className="flex-1 space-y-5 px-5 py-4">
         {error && (
-          <p className="rounded-xl bg-[var(--color-danger-soft)] px-4 py-3 text-sm text-[var(--color-danger)]">{error}</p>
+          <p className="rounded-xl bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">{error}</p>
         )}
 
         {step === 'requirement' && (
           <>
             <div>
-              <h2 className="mb-1 text-lg font-bold text-[var(--color-ink)]">What does the form need?</h2>
-              <p className="text-sm text-[var(--color-ink-muted)]">Pick a common requirement, or enter your own.</p>
+              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">What does the form need?</h2>
+              <p className="mt-1 text-sm text-[var(--ink-2)]">Pick a common requirement, or enter your own.</p>
             </div>
 
             <div className="space-y-2">
-              {PRESETS.map((p, i) => (
-                <button
-                  key={p.label}
-                  onClick={() => {
-                    setUseCustom(false)
-                    setPresetIndex(i)
-                  }}
-                  className={`w-full rounded-xl border px-4 py-3 text-left ${
-                    !useCustom && presetIndex === i
-                      ? 'border-[var(--color-primary)] bg-[var(--color-primary-soft)]'
-                      : 'border-[var(--color-border)] bg-[var(--color-surface)]'
-                  }`}
-                >
-                  <p className="text-sm font-semibold text-[var(--color-ink)]">{p.label}</p>
-                  <p className="text-xs text-[var(--color-ink-muted)]">
-                    {p.width} × {p.height} px · under {p.maxKb} KB
-                  </p>
-                </button>
-              ))}
+              {PRESETS.map((preset, i) => {
+                const active = !useCustom && presetIndex === i
+                return (
+                  <button
+                    key={preset.label}
+                    onClick={() => {
+                      setUseCustom(false)
+                      setPresetIndex(i)
+                    }}
+                    className={`flex w-full items-center justify-between gap-3 rounded-2xl border p-4 text-left transition-colors ${
+                      active
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                        : 'border-[var(--line)] bg-[var(--surface)]'
+                    }`}
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm font-bold text-[var(--ink)]">{preset.label}</span>
+                      <span className="block text-xs text-[var(--ink-2)]">{preset.note}</span>
+                    </span>
+                    <SpecChip state={active ? 'ok' : 'neutral'} icon={false}>
+                      {preset.width}×{preset.height} · {preset.maxKb}KB
+                    </SpecChip>
+                  </button>
+                )
+              })}
+
               <button
                 onClick={() => setUseCustom(true)}
-                className={`w-full rounded-xl border px-4 py-3 text-left ${
-                  useCustom ? 'border-[var(--color-primary)] bg-[var(--color-primary-soft)]' : 'border-[var(--color-border)] bg-[var(--color-surface)]'
+                className={`w-full rounded-2xl border p-4 text-left transition-colors ${
+                  useCustom
+                    ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                    : 'border-[var(--line)] bg-[var(--surface)]'
                 }`}
               >
-                <p className="text-sm font-semibold text-[var(--color-ink)]">Custom requirement</p>
-                <p className="text-xs text-[var(--color-ink-muted)]">Enter exact dimensions and size</p>
+                <span className="block text-sm font-bold text-[var(--ink)]">Custom requirement</span>
+                <span className="block text-xs text-[var(--ink-2)]">Type the exact numbers from the form</span>
               </button>
             </div>
 
             {useCustom && (
-              <div className="grid grid-cols-3 gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-                <label className="text-xs text-[var(--color-ink-muted)]">
-                  Width (px)
-                  <input
-                    type="number"
-                    value={customWidth}
-                    min={20}
-                    onChange={(e) => setCustomWidth(Math.max(20, Number(e.target.value) || 0))}
-                    className="mt-1 w-full rounded-lg border border-[var(--color-border)] px-2 py-2 text-sm"
-                  />
-                </label>
-                <label className="text-xs text-[var(--color-ink-muted)]">
-                  Height (px)
-                  <input
-                    type="number"
-                    value={customHeight}
-                    min={20}
-                    onChange={(e) => setCustomHeight(Math.max(20, Number(e.target.value) || 0))}
-                    className="mt-1 w-full rounded-lg border border-[var(--color-border)] px-2 py-2 text-sm"
-                  />
-                </label>
-                <label className="text-xs text-[var(--color-ink-muted)]">
-                  Max size (KB)
-                  <input
-                    type="number"
-                    value={customMaxKb}
-                    min={5}
-                    onChange={(e) => setCustomMaxKb(Math.max(5, Number(e.target.value) || 0))}
-                    className="mt-1 w-full rounded-lg border border-[var(--color-border)] px-2 py-2 text-sm"
-                  />
-                </label>
+              <div className="grid grid-cols-3 gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+                {(
+                  [
+                    ['Width', 'width'],
+                    ['Height', 'height'],
+                    ['Max KB', 'maxKb'],
+                  ] as const
+                ).map(([label, key]) => (
+                  <label key={key}>
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
+                      {label}
+                    </span>
+                    <input
+                      type="number"
+                      value={custom[key]}
+                      aria-invalid={issue ? 'true' : 'false'}
+                      onChange={(e) => setCustom({ ...custom, [key]: Math.max(0, Number(e.target.value) || 0) })}
+                      className="fr-field mt-1 px-2 text-sm"
+                    />
+                  </label>
+                ))}
               </div>
             )}
 
-            <Button fullWidth onClick={() => setStep('source')}>
+            {issue && (
+              <Notice
+                title={issue.title}
+                actions={issue.fixes.map((fix) => ({
+                  label: fix.label,
+                  onClick: () => setCustom(fix.requirement),
+                }))}
+              >
+                {issue.detail}
+              </Notice>
+            )}
+
+            <Button fullWidth disabled={!!issue} onClick={() => setStep('source')}>
               Continue
             </Button>
           </>
@@ -192,10 +201,8 @@ export function SmartPhoto() {
         {step === 'source' && (
           <>
             <div>
-              <h2 className="mb-1 text-lg font-bold text-[var(--color-ink)]">Add your photo</h2>
-              <p className="text-sm text-[var(--color-ink-muted)]">
-                Target: {target.width} × {target.height} px, under {target.maxKb} KB
-              </p>
+              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">Add your photo</h2>
+              <p className="mt-1 text-sm text-[var(--ink-2)]">Plain background, face centred and clearly visible.</p>
             </div>
             <SourceButtons onCamera={onCamera} onGallery={onGallery} />
           </>
@@ -204,53 +211,41 @@ export function SmartPhoto() {
         {step === 'crop' && img && (
           <>
             <div>
-              <h2 className="mb-1 text-lg font-bold text-[var(--color-ink)]">Frame your photo</h2>
-              <p className="text-sm text-[var(--color-ink-muted)]">
-                Fits {target.width} × {target.height} px
+              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">Frame your photo</h2>
+              <p className="mt-1 text-sm text-[var(--ink-2)]">
+                Everything inside the frame becomes the {target.width}×{target.height} px photo.
               </p>
             </div>
             <ImageCropper img={img} aspect={aspect} onCropChange={setCrop} />
             <Button fullWidth onClick={process}>
-              Prepare Photo
+              Prepare photo
             </Button>
           </>
         )}
 
-        {step === 'processing' && (
-          <div className="flex flex-col items-center justify-center gap-3 py-16">
-            <div className="h-10 w-10 animate-spin rounded-full border-4 border-[var(--color-primary-soft)] border-t-[var(--color-primary)]" />
-            <p className="text-sm text-[var(--color-ink-muted)]">Preparing your photo…</p>
-          </div>
-        )}
+        {step === 'working' && <ProgressPanel label="Preparing your photo" detail="Cropping and compressing" />}
 
         {step === 'result' && resultUrl && resultBlob && (
-          <>
-            <h2 className="text-lg font-bold text-[var(--color-ink)]">Your photo is ready</h2>
-            <div className="overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
-              <img
-                src={resultUrl}
-                alt="Prepared result"
-                className="mx-auto block rounded-md border border-[var(--color-border)]"
-                style={{ width: target.width, maxWidth: '100%', height: 'auto' }}
-              />
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <StatusChip ok label={`${target.width} × ${target.height} px`} />
-              <StatusChip ok={metSize} label={`${formatBytes(resultBlob.size)} ${metSize ? '' : `(target ${target.maxKb} KB)`}`} />
-            </div>
-            {!metSize && (
-              <p className="rounded-xl bg-[var(--color-warning-soft)] px-4 py-3 text-xs text-[var(--color-warning)]">
-                This photo couldn't be compressed under {target.maxKb} KB without becoming too low quality. It's still the
-                smallest we could make it — try a simpler background photo for a smaller file.
-              </p>
-            )}
-            <Button fullWidth onClick={onSave} icon={<DownloadIcon width={18} height={18} />}>
-              Save / Share
-            </Button>
-            <Button fullWidth variant="secondary" onClick={reset}>
-              Prepare Another Photo
-            </Button>
-          </>
+          <ResultView
+            heading="Your photo is ready"
+            blob={resultBlob}
+            filename={`photo-${target.width}x${target.height}.jpg`}
+            previewUrl={resultUrl}
+            previewWidth={target.width}
+            originalBytes={sourceBytes || undefined}
+            checks={[
+              { label: `${target.width}×${target.height} px`, ok: true },
+              { label: `≤ ${target.maxKb} KB`, ok: metSize },
+              { label: 'JPG', ok: true },
+            ]}
+            warning={
+              metSize
+                ? undefined
+                : `This photo couldn't go under ${target.maxKb} KB at usable quality. A plainer background usually compresses further.`
+            }
+            onStartOver={reset}
+            startOverLabel="Another photo"
+          />
         )}
       </main>
 

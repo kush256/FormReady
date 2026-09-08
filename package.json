@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.1",
