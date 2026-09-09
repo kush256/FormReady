@@ -380,6 +380,96 @@ export async function encodeJpegNearTarget(
   return blob
 }
 
+/**
+ * Colour steps per channel to try when a PNG has to hit a size, best first.
+ *
+ * PNG has no quality dial, so the only lever that keeps the exact pixel
+ * dimensions a form asks for is how many distinct colours the image contains.
+ * Fewer colours means longer runs of identical pixels, which is precisely what
+ * PNG's compression is good at.
+ */
+const PNG_LEVELS = [256, 192, 128, 96, 64, 48, 32, 24, 16, 12, 8, 6, 4, 3, 2]
+
+function posterise(source: ImageData, target: ImageData, levels: number): void {
+  const step = 255 / (levels - 1)
+  const lookup = new Uint8ClampedArray(256)
+  for (let value = 0; value < 256; value++) lookup[value] = Math.round(Math.round(value / step) * step)
+
+  const src = source.data
+  const dst = target.data
+  for (let i = 0; i < src.length; i += 4) {
+    dst[i] = lookup[src[i]]
+    dst[i + 1] = lookup[src[i + 1]]
+    dst[i + 2] = lookup[src[i + 2]]
+    dst[i + 3] = src[i + 3]
+  }
+}
+
+/**
+ * Gets a PNG under a byte budget without changing its pixel dimensions.
+ *
+ * Reducing the colour count is the only honest lever here: the dimensions are
+ * the requirement, so they cannot move. It searches for the richest palette
+ * that still fits, and reports metTarget=false rather than pretending when
+ * even two levels per channel is too large.
+ */
+export async function compressPngToTarget(
+  canvas: HTMLCanvasElement,
+  maxBytes: number,
+): Promise<CompressResult> {
+  const plain = await canvasToBlob(canvas, 'image/png')
+  if (plain.size <= maxBytes) {
+    return { blob: plain, quality: 1, bytes: plain.size, metTarget: true }
+  }
+
+  const ctx = canvas.getContext('2d')!
+  const original = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const scratch = ctx.createImageData(canvas.width, canvas.height)
+
+  let lo = 1
+  let hi = PNG_LEVELS.length - 1
+  let best: CompressResult | null = null
+
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2)
+    posterise(original, scratch, PNG_LEVELS[mid])
+    ctx.putImageData(scratch, 0, 0)
+    const blob = await canvasToBlob(canvas, 'image/png')
+    if (blob.size <= maxBytes) {
+      best = { blob, quality: PNG_LEVELS[mid] / 256, bytes: blob.size, metTarget: true }
+      // It fits, so try to keep more colour than this.
+      hi = mid - 1
+    } else {
+      lo = mid + 1
+    }
+  }
+
+  if (!best) {
+    posterise(original, scratch, PNG_LEVELS[PNG_LEVELS.length - 1])
+    ctx.putImageData(scratch, 0, 0)
+    const floor = await canvasToBlob(canvas, 'image/png')
+    best = {
+      blob: floor,
+      quality: PNG_LEVELS[PNG_LEVELS.length - 1] / 256,
+      bytes: floor.size,
+      metTarget: floor.size <= maxBytes,
+    }
+  }
+
+  // Hand the canvas back as it arrived; the caller keeps the blob, not this.
+  ctx.putImageData(original, 0, 0)
+  return best
+}
+
+/**
+ * Roughly the smallest a PNG of these dimensions can get with its colours cut
+ * right back. Higher than the JPEG floor because PNG never throws away detail,
+ * it only compresses what is there. Errs low, like its JPEG counterpart.
+ */
+export function estimateSmallestPngBytes(width: number, height: number): number {
+  return Math.max(3072, Math.round(width * height * 0.05))
+}
+
 export interface CropRect {
   /** All values are fractions (0..1) of the source image's natural size. */
   sx: number

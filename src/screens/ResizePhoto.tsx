@@ -9,7 +9,15 @@ import { ResultView } from '../components/ResultView'
 import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
 import { captureFromCamera, pickImages } from '../lib/picker'
-import { loadCappedImage, releaseImage, renderCrop, compressToTarget, canvasToBlob, type CropRect } from '../lib/image'
+import {
+  loadCappedImage,
+  releaseImage,
+  renderCrop,
+  compressToTarget,
+  compressPngToTarget,
+  canvasToBlob,
+  type CropRect,
+} from '../lib/image'
 import { validateRequirement } from '../lib/requirements'
 import { kbToBytes } from '../lib/format'
 
@@ -31,10 +39,11 @@ export function ResizePhoto() {
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [metSize, setMetSize] = useState(true)
+  const [reducedColours, setReducedColours] = useState(false)
 
   const aspect = useMemo(() => width / height, [width, height])
   const issue = useMemo(
-    () => (limitSize && format === 'jpeg' ? validateRequirement({ width, height, maxKb }) : null),
+    () => (limitSize ? validateRequirement({ width, height, maxKb }, format) : null),
     [limitSize, format, width, height, maxKb],
   )
 
@@ -69,18 +78,31 @@ export function ResizePhoto() {
     setStep('working')
     try {
       const canvas = renderCrop(img, crop, width, height, '#ffffff')
+
+      let blob: Blob
+      let metTarget = true
+      let colourCut = false
+
       if (format === 'png') {
-        const blob = await canvasToBlob(canvas, 'image/png')
-        setResultBlob(blob)
-        setResultUrl(URL.createObjectURL(blob))
-        setMetSize(true)
+        if (limitSize) {
+          const result = await compressPngToTarget(canvas, kbToBytes(maxKb))
+          blob = result.blob
+          metTarget = result.metTarget
+          colourCut = result.quality < 1
+        } else {
+          blob = await canvasToBlob(canvas, 'image/png')
+        }
       } else {
         const maxBytes = limitSize ? kbToBytes(maxKb) : 5 * 1024 * 1024
         const result = await compressToTarget(canvas, { maxBytes })
-        setResultBlob(result.blob)
-        setResultUrl(URL.createObjectURL(result.blob))
-        setMetSize(limitSize ? result.metTarget : true)
+        blob = result.blob
+        metTarget = limitSize ? result.metTarget : true
       }
+
+      setResultBlob(blob)
+      setResultUrl(URL.createObjectURL(blob))
+      setMetSize(metTarget)
+      setReducedColours(colourCut)
       setStep('result')
     } catch {
       setError('Something went wrong while resizing the photo.')
@@ -138,12 +160,7 @@ export function ResizePhoto() {
                   {(['jpeg', 'png'] as const).map((f) => (
                     <button
                       key={f}
-                      onClick={() => {
-                        setFormat(f)
-                        // PNG has no quality dial, so a size limit it cannot
-                        // honour must not be left sitting there ticked.
-                        if (f === 'png') setLimitSize(false)
-                      }}
+                      onClick={() => setFormat(f)}
                       className={`flex-1 rounded-lg border px-3 py-2.5 text-sm font-bold transition-colors ${
                         format === f
                           ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-ink)]'
@@ -159,14 +176,13 @@ export function ResizePhoto() {
               <label className="flex items-center gap-2 text-xs text-[var(--ink-2)]">
                 <input
                   type="checkbox"
-                  checked={limitSize && format === 'jpeg'}
+                  checked={limitSize}
                   onChange={(e) => setLimitSize(e.target.checked)}
-                  disabled={format === 'png'}
                 />
-                Limit the file size {format === 'png' && '(JPEG only)'}
+                Limit the file size
               </label>
 
-              {limitSize && format === 'jpeg' && (
+              {limitSize && (
                 <label className="block">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
                     Maximum size (KB)
@@ -233,8 +249,17 @@ export function ResizePhoto() {
             checks={[
               { label: `${width}×${height} px`, ok: true },
               { label: format.toUpperCase(), ok: true },
-              ...(limitSize && format === 'jpeg' ? [{ label: `≤ ${maxKb} KB`, ok: metSize }] : []),
+              ...(limitSize ? [{ label: `≤ ${maxKb} KB`, ok: metSize }] : []),
             ]}
+            warning={
+              !metSize
+                ? format === 'png'
+                  ? `Couldn't get under ${maxKb} KB even with the colours cut right back. PNG keeps every pixel, so JPEG is the way to reach this size.`
+                  : `Couldn't fit under ${maxKb} KB at usable quality.`
+                : reducedColours
+                  ? 'Colours were reduced to reach the size limit. PNG has no quality setting, so fewer colours is the only way down while the dimensions stay exact.'
+                  : undefined
+            }
             onStartOver={reset}
             startOverLabel="Another photo"
           />

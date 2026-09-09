@@ -1,4 +1,4 @@
-import { estimateSmallestJpegBytes } from './image'
+import { estimateSmallestJpegBytes, estimateSmallestPngBytes } from './image'
 import { formatBytes } from './format'
 
 export interface ImageRequirement {
@@ -26,7 +26,10 @@ const MAX_EDGE = 10000
  * photo, rather than after grinding through the work and failing. Always
  * returns a way forward, because "that won't work" on its own is useless.
  */
-export function validateRequirement(req: ImageRequirement): RequirementIssue | null {
+export function validateRequirement(
+  req: ImageRequirement,
+  format: 'jpeg' | 'png' = 'jpeg',
+): RequirementIssue | null {
   if (!Number.isFinite(req.width) || !Number.isFinite(req.height) || req.width < MIN_EDGE || req.height < MIN_EDGE) {
     return {
       title: 'Dimensions are too small',
@@ -51,7 +54,10 @@ export function validateRequirement(req: ImageRequirement): RequirementIssue | n
     }
   }
 
-  const floorBytes = estimateSmallestJpegBytes(req.width, req.height)
+  const floorBytes =
+    format === 'png'
+      ? estimateSmallestPngBytes(req.width, req.height)
+      : estimateSmallestJpegBytes(req.width, req.height)
   const budgetBytes = req.maxKb * 1024
 
   if (floorBytes > budgetBytes) {
@@ -62,7 +68,10 @@ export function validateRequirement(req: ImageRequirement): RequirementIssue | n
 
     return {
       title: "That combination isn't possible",
-      detail: `A ${req.width}×${req.height} px photo can't be squeezed under ${req.maxKb} KB without becoming unreadable. The smallest realistic size at these dimensions is about ${formatBytes(floorBytes)}.`,
+      detail:
+        format === 'png'
+          ? `A ${req.width}×${req.height} px PNG can't get under ${req.maxKb} KB. PNG keeps every pixel, so the only way down is fewer colours, and even that bottoms out around ${formatBytes(floorBytes)} at these dimensions. JPEG goes far smaller.`
+          : `A ${req.width}×${req.height} px photo can't be squeezed under ${req.maxKb} KB without becoming unreadable. The smallest realistic size at these dimensions is about ${formatBytes(floorBytes)}.`,
       fixes: [
         { label: `Use ${achievableKb} KB`, requirement: { ...req, maxKb: achievableKb } },
         {

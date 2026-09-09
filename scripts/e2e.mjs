@@ -372,6 +372,35 @@ async function main() {
   await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
   check('Exam-driven photo meets the exam spec', (await page.locator('main').innerText()).includes('Meets every requirement'))
 
+  // ---- Resize Photo: a size limit applies to PNG as well as JPEG ----
+  await openTool(page, 'resize-photo')
+  await page.waitForSelector('text=Resize Photo')
+  await page.getByRole('button', { name: 'PNG', exact: true }).click()
+  const pngLimit = page.locator('input[type="checkbox"]').first()
+  check('Size limit is offered for PNG', await pngLimit.isEnabled())
+  await pngLimit.check()
+  const pngKb = page.getByLabel('Maximum size in KB')
+  await pngKb.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('60')
+  await page.locator('body').click()
+  await page.locator('button:has-text("Continue")').click()
+  await page.waitForSelector('text=Add your photo')
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
+  await page.waitForSelector('text=Frame your photo')
+  await page.locator('button:has-text("Resize photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 30000 })
+  const pngResult = await page.locator('main').innerText()
+  check('PNG honours the size limit', pngResult.includes('Meets every requirement'), pngResult.split('\n')[0])
+  check('PNG result is still a PNG', pngResult.includes('PNG'))
+  check('PNG explains how it reached the size', pngResult.includes('Colours were reduced'))
+  const pngBytes = await page.evaluate(() => {
+    const img = document.querySelector('main img[alt="Prepared result"]')
+    return img ? fetch(img.src).then((r) => r.blob()).then((b) => b.size) : 0
+  })
+  check(`PNG landed under 60 KB (${Math.round(pngBytes / 1024)} KB)`, pngBytes > 0 && pngBytes <= 60 * 1024, `${pngBytes} bytes`)
+
   // ---- Signing on the screen ----
   await openTool(page, 'signature-maker')
   await page.waitForSelector('text=Add your signature')
