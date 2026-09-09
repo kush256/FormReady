@@ -23,7 +23,7 @@ const SaveFile = registerPlugin<SaveFilePlugin>('SaveFile')
  * The size must be a multiple of three so each chunk encodes to base64 with no
  * padding, and can be decoded on its own.
  */
-const CHUNK_BYTES = 3 * 1024 * 1024
+const CHUNK_BYTES = 1536 * 1024
 
 function chunkToBase64(chunk: Blob): Promise<string> {
   return new Promise((resolve, reject) => {

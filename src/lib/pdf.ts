@@ -191,7 +191,7 @@ export async function imagesToPdf(
 
     onPage?.(index + 1)
     // Let the progress counter actually paint between pages.
-    await yieldToUi()
+    await yieldToUi(true)
   }
   return pdfDoc.save({ useObjectStreams: true })
 }
@@ -218,7 +218,7 @@ export async function mergePdfs(
     pages.forEach((p) => merged.addPage(p))
     pagesSoFar += pages.length
     onFile?.(index + 1, pagesSoFar)
-    await yieldToUi()
+    await yieldToUi(true)
   }
   return merged.save({ useObjectStreams: true })
 }
@@ -362,6 +362,9 @@ export async function compressPdf(
   // Report something before the first parse, which on a large file is a few
   // seconds of silence the user would otherwise read as a freeze.
   onProgress?.({ phase: 'analysing', fraction: 0.02, page: 0, pageCount: 0, bytesSoFar: originalBytes })
+  // Hand the frame back so that message is actually on screen before the
+  // parse starts, rather than queued behind it.
+  await yieldToUi(true)
 
   const canParse = originalBytes <= PDF_LIB_SAFE_BYTES
   const canHold = originalBytes <= PDF_LIB_HOLD_BYTES
