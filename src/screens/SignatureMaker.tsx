@@ -10,6 +10,8 @@ import { ResultView } from '../components/ResultView'
 import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
 import { SignatureIllustration } from '../components/Illustrations'
+import { SignaturePad } from '../components/SignaturePad'
+import { PenIcon } from '../components/Icons'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import {
   loadCappedImage,
@@ -18,11 +20,21 @@ import {
   whitenBackground,
   analyseInk,
   forceInkBlack,
+  renderTrimmedInk,
+  releaseCanvas,
   type CropRect,
 } from '../lib/image'
 import { kbToBytes } from '../lib/format'
 
-type Step = 'setup' | 'crop' | 'working' | 'result'
+type Step = 'setup' | 'draw' | 'crop' | 'working' | 'result'
+
+/** What the working screen is doing right now, so it isn't a blank spinner. */
+const STAGES = ['Cropping to size', 'Cleaning the paper', 'Checking the ink', 'Fitting the file size'] as const
+
+/** Lets the progress line actually paint between stages. */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()))
+}
 
 const DEFAULT_WIDTH = 140
 const DEFAULT_HEIGHT = 60
@@ -48,6 +60,8 @@ export function SignatureMaker() {
   const [img, setImg] = useState<HTMLImageElement | null>(null)
   const [crop, setCrop] = useState<CropRect | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [stage, setStage] = useState(0)
+  const [drawn, setDrawn] = useState(false)
 
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
@@ -84,21 +98,57 @@ export function SignatureMaker() {
     const canvas = cropCanvas.current!
     const result = await compressToTarget(canvas, { maxBytes: kbToBytes(maxKb), minQuality: 0.3 })
     setResultBlob(result.blob)
-    setResultUrl(URL.createObjectURL(result.blob))
+    setResultUrl((previous) => {
+      if (previous) URL.revokeObjectURL(previous)
+      return URL.createObjectURL(result.blob)
+    })
     setMetSize(result.metTarget)
+  }
+
+  /** Takes the finished drawing straight to the result: nothing to crop. */
+  async function useDrawnSignature(pad: HTMLCanvasElement) {
+    setStage(0)
+    setStep('working')
+    try {
+      await nextFrame()
+      const canvas = renderTrimmedInk(pad, width, height)
+      releaseCanvas(pad)
+      cropCanvas.current = canvas
+      setBlueInk(false)
+      setConvertedToBlack(false)
+      setDrawn(true)
+      setStage(3)
+      await nextFrame()
+      await encodeCurrentCanvas()
+      setStep('result')
+    } catch {
+      setError('Something went wrong while preparing the signature.')
+      setStep('draw')
+    }
   }
 
   async function process() {
     if (!img || !crop) return
+    setStage(0)
     setStep('working')
     try {
+      await nextFrame()
       const canvas = renderCrop(img, crop, width, height, '#ffffff')
+
+      setStage(1)
+      await nextFrame()
       if (cleanBackground) whitenBackground(canvas)
       cropCanvas.current = canvas
 
+      setStage(2)
+      await nextFrame()
       const ink = analyseInk(canvas)
       setBlueInk(ink.isBlue)
       setConvertedToBlack(false)
+      setDrawn(false)
+
+      setStage(3)
+      await nextFrame()
       await encodeCurrentCanvas()
       setStep('result')
     } catch {
@@ -116,10 +166,14 @@ export function SignatureMaker() {
   }
 
   function reset() {
+    setResultUrl((previous) => {
+      if (previous) URL.revokeObjectURL(previous)
+      return null
+    })
+    setDrawn(false)
     setImg(null)
     setCrop(null)
     setResultBlob(null)
-    setResultUrl(null)
     setError(null)
     setBlueInk(false)
     setConvertedToBlack(false)
@@ -142,7 +196,7 @@ export function SignatureMaker() {
               <SignatureIllustration size={190} />
               <h2 className="mt-1 text-xl font-extrabold tracking-tight text-[var(--ink)]">Add your signature</h2>
               <p className="mx-auto mt-1.5 max-w-[32ch] text-sm leading-relaxed text-[var(--ink-2)]">
-                Sign on plain white paper in black ink, then photograph it.
+                Sign on the screen with a finger or stylus, or photograph a signature on plain white paper.
               </p>
             </div>
 
@@ -183,7 +237,36 @@ export function SignatureMaker() {
               </label>
             </div>
 
+            <button
+              onClick={() => {
+                setError(null)
+                setStep('draw')
+              }}
+              className="flex w-full items-center justify-center gap-2.5 rounded-2xl border border-[var(--accent)] bg-[var(--accent-soft)] py-5 active:bg-black/[0.03]"
+            >
+              <PenIcon width={22} height={22} className="text-[var(--accent)]" />
+              <span className="text-[15px] font-bold text-[var(--accent-ink)]">Sign on this screen</span>
+            </button>
+
+            <div className="flex items-center gap-3">
+              <span className="h-px flex-1 bg-[var(--line)]" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">or</span>
+              <span className="h-px flex-1 bg-[var(--line)]" />
+            </div>
+
             <SourceButtons onCamera={onCamera} onGallery={onGallery} />
+          </>
+        )}
+
+        {step === 'draw' && (
+          <>
+            <div>
+              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">Sign here</h2>
+              <p className="mt-1 text-sm text-[var(--ink-2)]">
+                Use a finger or a stylus. It is trimmed and fitted to {width}×{height} px for you.
+              </p>
+            </div>
+            <SignaturePad aspect={aspect} onDone={useDrawnSignature} onCancel={() => setStep('setup')} />
           </>
         )}
 
@@ -202,7 +285,13 @@ export function SignatureMaker() {
           </>
         )}
 
-        {step === 'working' && <ProgressPanel label="Preparing your signature" detail="Cropping and checking ink" />}
+        {step === 'working' && (
+          <ProgressPanel
+            label="Preparing your signature"
+            fraction={(stage + 1) / STAGES.length}
+            detail={STAGES[stage]}
+          />
+        )}
 
         {step === 'result' && resultUrl && resultBlob && (
           <div className="space-y-4">
@@ -230,9 +319,11 @@ export function SignatureMaker() {
               warning={
                 convertedToBlack
                   ? 'Ink converted to black and the paper cleaned to white.'
-                  : metSize
-                    ? undefined
-                    : `Couldn't fit under ${maxKb} KB at usable quality.`
+                  : !metSize
+                    ? `Couldn't fit under ${maxKb} KB at usable quality.`
+                    : drawn
+                      ? 'Drawn on screen, trimmed to the ink and fitted to size.'
+                      : undefined
               }
               onStartOver={reset}
               startOverLabel="Another signature"

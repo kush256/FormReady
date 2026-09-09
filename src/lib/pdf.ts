@@ -1,7 +1,7 @@
 import { PDFDocument, rgb } from 'pdf-lib'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url'
-import { canvasToBlob } from './image'
+import { canvasToBlob, decodeToCanvas, releaseCanvas } from './image'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
@@ -9,9 +9,20 @@ const A4_WIDTH = 595.28
 const A4_HEIGHT = 841.89
 const PAGE_MARGIN = 24
 
-export async function getPageCount(bytes: Uint8Array): Promise<number> {
-  const doc = await PDFDocument.load(bytes, { ignoreEncryption: true })
-  return doc.getPageCount()
+/**
+ * Counts the pages in a document.
+ *
+ * Uses pdf.js rather than pdf-lib because it only needs to read the catalogue,
+ * not build an object model of every page. On a large file that is the
+ * difference between a moment and several seconds, paid once per file the
+ * moment it is added to a list.
+ */
+export async function getPageCount(file: Blob): Promise<number> {
+  const data = new Uint8Array(await file.arrayBuffer())
+  const doc = await pdfjsLib.getDocument({ data }).promise
+  const count = doc.numPages
+  await doc.destroy()
+  return count
 }
 
 async function loadPdfJsDoc(bytes: Uint8Array) {
@@ -19,34 +30,107 @@ async function loadPdfJsDoc(bytes: Uint8Array) {
   return loadingTask.promise
 }
 
-/** Renders every page of a PDF to a JPEG data URL thumbnail, for pickers/previews. */
-export async function renderPageThumbnails(
-  bytes: Uint8Array,
-  maxWidth = 240,
-): Promise<string[]> {
-  const doc = await loadPdfJsDoc(bytes)
-  const thumbs: string[] = []
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i)
-    const viewport = page.getViewport({ scale: 1 })
-    const scale = maxWidth / viewport.width
-    const scaledViewport = page.getViewport({ scale })
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.ceil(scaledViewport.width)
-    canvas.height = Math.ceil(scaledViewport.height)
-    const ctx = canvas.getContext('2d')!
-    await page.render({ canvasContext: ctx, viewport: scaledViewport }).promise
-    thumbs.push(canvas.toDataURL('image/jpeg', 0.7))
-  }
-  return thumbs
+export interface PageThumbnails {
+  /** Known the moment the file opens, without rendering anything. */
+  pageCount: number
+  /** Aspect ratio of the first page, for correctly shaped placeholders. */
+  aspectRatio: number
+  /** Renders one 0-based page, or returns the cached image. */
+  get(index: number): Promise<string>
+  close(): void
 }
 
+/**
+ * Opens a PDF for previewing and renders pages only when they are asked for.
+ *
+ * Rendering every page up front is what made Split PDF sit on a spinner for a
+ * minute: a 345-page document meant 345 renders before the user saw anything,
+ * and they usually only wanted page 4. Opening the document is nearly free, so
+ * the grid can appear immediately and fill itself in as the user scrolls.
+ */
+export async function openPageThumbnails(
+  bytes: Uint8Array,
+  maxWidth = 220,
+): Promise<PageThumbnails> {
+  const doc = await loadPdfJsDoc(bytes)
+  const cache = new Map<number, string>()
+  const inFlight = new Map<number, Promise<string>>()
+  let closed = false
+
+  const first = await doc.getPage(1)
+  const firstViewport = first.getViewport({ scale: 1 })
+  const aspectRatio = firstViewport.width / firstViewport.height
+  first.cleanup()
+
+  // Renders run one at a time. Firing off thirty at once on a phone competes
+  // for the same decoder and makes every one of them land later.
+  let chain: Promise<unknown> = Promise.resolve()
+
+  async function render(index: number): Promise<string> {
+    const page = await doc.getPage(index + 1)
+    try {
+      const viewport = page.getViewport({ scale: 1 })
+      const scale = maxWidth / viewport.width
+      const scaled = page.getViewport({ scale })
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.ceil(scaled.width))
+      canvas.height = Math.max(1, Math.ceil(scaled.height))
+      const ctx = canvas.getContext('2d', { alpha: false })!
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      await page.render({ canvasContext: ctx, viewport: scaled }).promise
+      const url = canvas.toDataURL('image/jpeg', 0.7)
+      releaseCanvas(canvas)
+      return url
+    } finally {
+      page.cleanup()
+    }
+  }
+
+  return {
+    pageCount: doc.numPages,
+    aspectRatio,
+    get(index: number): Promise<string> {
+      const cached = cache.get(index)
+      if (cached) return Promise.resolve(cached)
+      const running = inFlight.get(index)
+      if (running) return running
+
+      const task = chain.then(async () => {
+        if (closed) throw new Error('This document is closed.')
+        const url = await render(index)
+        cache.set(index, url)
+        inFlight.delete(index)
+        return url
+      })
+      inFlight.set(index, task)
+      chain = task.catch(() => {})
+      return task
+    },
+    close() {
+      closed = true
+      cache.clear()
+      inFlight.clear()
+      doc.destroy().catch(() => {})
+    },
+  }
+}
+
+/**
+ * Renders a page, reusing the caller's canvas when one is offered.
+ *
+ * A long document otherwise allocates and frees one canvas per page. Resizing
+ * a single canvas hands the same job to the allocator once instead of three
+ * hundred times, which on a phone is the difference between smooth progress
+ * and periodic stalls.
+ */
 async function renderPageToCanvas(
   page: pdfjsLib.PDFPageProxy,
   scale: number,
+  reuse?: HTMLCanvasElement,
 ): Promise<HTMLCanvasElement> {
   const viewport = page.getViewport({ scale })
-  const canvas = document.createElement('canvas')
+  const canvas = reuse ?? document.createElement('canvas')
   canvas.width = Math.max(1, Math.ceil(viewport.width))
   canvas.height = Math.max(1, Math.ceil(viewport.height))
   const ctx = canvas.getContext('2d')!
@@ -60,13 +144,36 @@ export interface ImagePageInput {
   height: number
 }
 
+/**
+ * Turns one image into something pdf-lib will accept.
+ *
+ * pdf-lib only understands baseline JPEG and PNG. A progressive JPEG, a
+ * CMYK one out of a scanner, or a WEBP straight from a phone gallery all throw
+ * here, and that used to abort the whole document. Anything it refuses gets
+ * decoded and written back out as a plain JPEG instead.
+ */
+async function embedImage(pdfDoc: PDFDocument, blob: Blob, width: number, height: number) {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  try {
+    return blob.type === 'image/png' ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes)
+  } catch {
+    // Not a format pdf-lib reads directly; normalise it below.
+  }
+
+  const canvas = await decodeToCanvas(blob, width, height, 2200)
+  const jpeg = await canvasToBlob(canvas, 'image/jpeg', 0.82)
+  releaseCanvas(canvas)
+  return pdfDoc.embedJpg(new Uint8Array(await jpeg.arrayBuffer()))
+}
+
 /** Builds a single PDF with one image per page, fit to A4 with a margin, centered. */
-export async function imagesToPdf(images: ImagePageInput[]): Promise<Uint8Array> {
+export async function imagesToPdf(
+  images: ImagePageInput[],
+  onPage?: (done: number) => void,
+): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create()
-  for (const image of images) {
-    const bytes = new Uint8Array(await image.blob.arrayBuffer())
-    const isPng = image.blob.type === 'image/png'
-    const embedded = isPng ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes)
+  for (const [index, image] of images.entries()) {
+    const embedded = await embedImage(pdfDoc, image.blob, image.width, image.height)
 
     const page = pdfDoc.addPage([A4_WIDTH, A4_HEIGHT])
     const maxW = A4_WIDTH - PAGE_MARGIN * 2
@@ -81,18 +188,39 @@ export async function imagesToPdf(images: ImagePageInput[]): Promise<Uint8Array>
       width: drawW,
       height: drawH,
     })
+
+    onPage?.(index + 1)
+    // Let the progress counter actually paint between pages.
+    await yieldToUi()
   }
-  return pdfDoc.save()
+  return pdfDoc.save({ useObjectStreams: true })
 }
 
-export async function mergePdfs(files: Uint8Array[]): Promise<Uint8Array> {
+/**
+ * Joins documents in order.
+ *
+ * Files are read one at a time rather than all up front, so only the document
+ * being copied and the one being built are ever in memory. Reading them all
+ * first meant a 171 MB merge held its own size twice over before any work
+ * started.
+ */
+export async function mergePdfs(
+  files: Blob[],
+  onFile?: (done: number, pagesSoFar: number) => void,
+): Promise<Uint8Array> {
   const merged = await PDFDocument.create()
-  for (const fileBytes of files) {
-    const src = await PDFDocument.load(fileBytes, { ignoreEncryption: true })
+  let pagesSoFar = 0
+  for (const [index, file] of files.entries()) {
+    const src = await PDFDocument.load(new Uint8Array(await file.arrayBuffer()), {
+      ignoreEncryption: true,
+    })
     const pages = await merged.copyPages(src, src.getPageIndices())
     pages.forEach((p) => merged.addPage(p))
+    pagesSoFar += pages.length
+    onFile?.(index + 1, pagesSoFar)
+    await yieldToUi()
   }
-  return merged.save()
+  return merged.save({ useObjectStreams: true })
 }
 
 /** Extracts the given 0-based page indices, in the order supplied, into a new PDF. */
@@ -155,7 +283,20 @@ function throwIfAborted(signal?: AbortSignal) {
 }
 
 /** Lets the browser paint progress and process a cancel tap between pages. */
-function yieldToUi(): Promise<void> {
+let lastYield = 0
+
+/**
+ * Hands the main thread back, but only when it has actually been held.
+ *
+ * Yielding after every page sounds harmless until the browser's four
+ * millisecond timer floor is multiplied by three hundred pages. This yields on
+ * a frame budget instead, so progress still paints about sixty times a second
+ * and nothing is spent on pages that were quick.
+ */
+function yieldToUi(force = false): Promise<void> {
+  const now = performance.now()
+  if (!force && now - lastYield < 16) return Promise.resolve()
+  lastYield = now
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
@@ -489,6 +630,8 @@ async function assemble(
   const out = await PDFDocument.create()
   let bytesSoFar = 0
   const startedAt = performance.now()
+  // One canvas for the whole document, resized per page.
+  const scratch = document.createElement('canvas')
 
   for (let i = 0; i < plan.length; i++) {
     throwIfAborted(ctx.signal)
@@ -496,9 +639,8 @@ async function assemble(
 
     if (entry.rasterise || !srcDoc) {
       const page = await renderDoc.getPage(entry.index)
-      const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale))
+      const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale), scratch)
       const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
-      releaseCanvas(canvas)
 
       const jpegBytes = new Uint8Array(await jpeg.arrayBuffer())
       bytesSoFar += jpegBytes.byteLength
@@ -532,6 +674,7 @@ async function assemble(
     await yieldToUi()
   }
 
+  releaseCanvas(scratch)
   return out.save({ useObjectStreams: true })
 }
 
@@ -552,17 +695,18 @@ async function project(
 
   let totalBytes = 0
   const startedAt = performance.now()
+  const scratch = document.createElement('canvas')
   for (const entry of samples) {
     throwIfAborted(signal)
     const page = await doc.getPage(entry.index)
-    const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale))
+    const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale), scratch)
     const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
-    releaseCanvas(canvas)
     page.cleanup()
     totalBytes += jpeg.size
     await yieldToUi()
   }
   const elapsed = performance.now() - startedAt
+  releaseCanvas(scratch)
 
   const perPage = totalBytes / Math.max(1, samples.length)
   // Copied pages keep their original weight, which we cannot see from here, so
@@ -571,8 +715,3 @@ async function project(
   return { bytes: projectedBytes, msPerPage: elapsed / Math.max(1, samples.length) }
 }
 
-/** Frees the backing bitmap immediately rather than waiting for GC. */
-function releaseCanvas(canvas: HTMLCanvasElement) {
-  canvas.width = 0
-  canvas.height = 0
-}

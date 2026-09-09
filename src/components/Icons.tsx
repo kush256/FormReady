@@ -148,3 +148,17 @@ export const DownloadIcon = (p: IconProps) => (
     <path d="M4 19h16" />
   </svg>
 )
+
+export const UndoIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M9 14L4 9l5-5" />
+    <path d="M4 9h10a6 6 0 0 1 0 12h-3" />
+  </svg>
+)
+
+export const PenIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" />
+    <path d="M14.5 5.5l3 3" />
+  </svg>
+)

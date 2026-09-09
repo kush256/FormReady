@@ -19,11 +19,107 @@ export function loadImage(source: File | Blob | string): Promise<HTMLImageElemen
 const MAX_SOURCE_EDGE = 2400
 
 /**
- * Decodes a photo off the main thread and caps its size before it ever
- * reaches the DOM. A 12-megapixel phone photo decoded straight into an <img>
- * blocks the main thread and holds ~48 MB; this keeps it to a few MB.
+ * Reads a photo's pixel size out of its header, without decoding it.
+ *
+ * Worth the parsing: it tells us whether a photo needs shrinking at all, and
+ * the answer is usually no. Before this, every photo was fully decoded once
+ * just to measure it and then decoded a second time for display — two passes
+ * over a 12-megapixel image to learn something stored in its first few bytes.
+ *
+ * Returns null for anything it doesn't recognise, and the caller falls back to
+ * decoding.
+ */
+export async function readImageDimensions(
+  file: Blob,
+): Promise<{ width: number; height: number } | null> {
+  // Every format below keeps its dimensions in the first few hundred bytes,
+  // except JPEG, whose EXIF thumbnail can push them further in.
+  const head = new Uint8Array(await file.slice(0, 128 * 1024).arrayBuffer())
+  return readPng(head) ?? readJpeg(head) ?? readWebp(head) ?? readGif(head)
+}
+
+function readPng(b: Uint8Array): { width: number; height: number } | null {
+  if (b.length < 24 || b[0] !== 0x89 || b[1] !== 0x50 || b[2] !== 0x4e || b[3] !== 0x47) return null
+  const view = new DataView(b.buffer, b.byteOffset, b.byteLength)
+  return { width: view.getUint32(16), height: view.getUint32(20) }
+}
+
+function readJpeg(b: Uint8Array): { width: number; height: number } | null {
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return null
+  let i = 2
+  while (i + 9 < b.length) {
+    if (b[i] !== 0xff) {
+      i++
+      continue
+    }
+    const marker = b[i + 1]
+    // Fill bytes and standalone markers carry no length field.
+    if (marker === 0xff) {
+      i++
+      continue
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9)) {
+      i += 2
+      continue
+    }
+    const segmentLength = (b[i + 2] << 8) | b[i + 3]
+    const isStartOfFrame =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    if (isStartOfFrame) {
+      return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8] }
+    }
+    if (segmentLength < 2) return null
+    i += 2 + segmentLength
+  }
+  return null
+}
+
+function readWebp(b: Uint8Array): { width: number; height: number } | null {
+  if (b.length < 30) return null
+  const tag = String.fromCharCode(b[0], b[1], b[2], b[3])
+  const format = String.fromCharCode(b[8], b[9], b[10], b[11])
+  if (tag !== 'RIFF' || format !== 'WEBP') return null
+  const chunk = String.fromCharCode(b[12], b[13], b[14], b[15])
+  if (chunk === 'VP8X') {
+    return {
+      width: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)),
+      height: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)),
+    }
+  }
+  if (chunk === 'VP8 ') {
+    return { width: ((b[26] | (b[27] << 8)) & 0x3fff), height: ((b[28] | (b[29] << 8)) & 0x3fff) }
+  }
+  if (chunk === 'VP8L') {
+    const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24)
+    return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >> 14) & 0x3fff) }
+  }
+  return null
+}
+
+function readGif(b: Uint8Array): { width: number; height: number } | null {
+  if (b.length < 10 || b[0] !== 0x47 || b[1] !== 0x49 || b[2] !== 0x46) return null
+  return { width: b[6] | (b[7] << 8), height: b[8] | (b[9] << 8) }
+}
+
+/**
+ * Loads a photo for editing, shrinking it only if it is genuinely oversized.
+ *
+ * Form requirements top out in the low hundreds of pixels, so a full 12-
+ * megapixel decode is 48 MB spent on detail that the crop throws away. The
+ * header tells us the size first, and a photo already within the cap goes
+ * straight to the browser with a single decode.
  */
 export async function loadCappedImage(file: Blob): Promise<HTMLImageElement> {
+  const header = await readImageDimensions(file).catch(() => null)
+  // A rotated photo reports its width and height the other way round, but the
+  // longest edge is the same either way, which is all this test needs.
+  if (header && Math.max(header.width, header.height) <= MAX_SOURCE_EDGE) {
+    return loadImage(file)
+  }
+
   if (typeof createImageBitmap !== 'function') {
     return loadImage(file)
   }
@@ -52,8 +148,7 @@ export async function loadCappedImage(file: Blob): Promise<HTMLImageElement> {
   bitmap.close()
 
   const blob = await canvasToBlob(canvas, 'image/jpeg', 0.92)
-  canvas.width = 0
-  canvas.height = 0
+  releaseCanvas(canvas)
   return loadImage(blob)
 }
 
@@ -123,6 +218,155 @@ export async function compressToTarget(
 
   if (best) return best
   return { blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: floorBlob.size <= opts.maxBytes }
+}
+
+/**
+ * Frees a canvas's backing store immediately.
+ *
+ * A 2200-pixel canvas holds around 20 MB of pixels. Waiting for the collector
+ * to notice is how a batch of photos runs a phone out of memory halfway
+ * through, so every canvas we finish with is dropped on the spot.
+ */
+export function releaseCanvas(canvas: HTMLCanvasElement): void {
+  canvas.width = 0
+  canvas.height = 0
+}
+
+export interface PhotoPreview {
+  width: number
+  height: number
+  /** Small data URL for list rows, cheap enough to hold dozens of. */
+  thumbnail: string
+}
+
+/** Longest edge of a list thumbnail. */
+const THUMB_EDGE = 180
+
+/**
+ * Reads a photo's true size and makes a small preview, keeping nothing else.
+ *
+ * The previous version held a fully decoded copy of every picked photo for as
+ * long as the screen was open — around 10 MB each for a phone screenshot, and
+ * an object URL that was never released. A few photos was enough for Android
+ * to kill the WebView mid-conversion.
+ */
+export async function readPhotoPreview(file: Blob): Promise<PhotoPreview> {
+  if (typeof createImageBitmap === 'function') {
+    let bitmap: ImageBitmap | null = null
+    try {
+      bitmap = await createImageBitmap(file)
+      const width = bitmap.width
+      const height = bitmap.height
+      const preview = drawThumbnail(bitmap, width, height)
+      return { width, height, thumbnail: preview }
+    } catch {
+      // Fall through to the <img> path below.
+    } finally {
+      bitmap?.close()
+    }
+  }
+
+  const img = await loadImage(file)
+  const preview = drawThumbnail(img, img.naturalWidth, img.naturalHeight)
+  const result = { width: img.naturalWidth, height: img.naturalHeight, thumbnail: preview }
+  revokeIfObjectUrl(img.src)
+  return result
+}
+
+function drawThumbnail(source: CanvasImageSource, width: number, height: number): string {
+  const ratio = Math.min(THUMB_EDGE / Math.max(width, height), 1)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(width * ratio))
+  canvas.height = Math.max(1, Math.round(height * ratio))
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(source, 0, 0, canvas.width, canvas.height)
+  const url = canvas.toDataURL('image/jpeg', 0.6)
+  releaseCanvas(canvas)
+  return url
+}
+
+function revokeIfObjectUrl(src: string) {
+  if (src.startsWith('blob:')) URL.revokeObjectURL(src)
+}
+
+/**
+ * Decodes a photo straight to the size we actually want.
+ *
+ * Passing the target size to createImageBitmap lets the browser scale during
+ * decode, on its own thread, so the full-resolution pixels are never held at
+ * all. Decoding a 12-megapixel photo and then shrinking it costs 48 MB and a
+ * long main-thread stall; this costs neither.
+ *
+ * The canvas is opaque and pre-filled with white, so a screenshot with a
+ * transparent background becomes white rather than black once it is a JPEG.
+ */
+export async function decodeToCanvas(
+  file: Blob,
+  naturalWidth: number,
+  naturalHeight: number,
+  maxEdge: number,
+): Promise<HTMLCanvasElement> {
+  const ratio = Math.min(maxEdge / Math.max(naturalWidth, naturalHeight, 1), 1)
+  const width = Math.max(1, Math.round(naturalWidth * ratio))
+  const height = Math.max(1, Math.round(naturalHeight * ratio))
+
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext('2d', { alpha: false })!
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, width, height)
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap =
+        ratio < 1
+          ? await createImageBitmap(file, {
+              resizeWidth: width,
+              resizeHeight: height,
+              resizeQuality: 'high',
+            })
+          : await createImageBitmap(file)
+      ctx.drawImage(bitmap, 0, 0, width, height)
+      bitmap.close()
+      return canvas
+    } catch {
+      // Fall through to the <img> path below.
+    }
+  }
+
+  const img = await loadImage(file)
+  ctx.drawImage(img, 0, 0, width, height)
+  revokeIfObjectUrl(img.src)
+  return canvas
+}
+
+/**
+ * Encodes a JPEG close to a byte budget, in at most three attempts.
+ *
+ * The binary search in compressToTarget is the right tool when the number is a
+ * hard requirement printed in a notification. A page inside a PDF only has a
+ * budget, so eight encodes of a full-size photo is time the user waits for
+ * with nothing to show for it.
+ */
+export async function encodeJpegNearTarget(
+  canvas: HTMLCanvasElement,
+  maxBytes: number,
+  startQuality = 0.82,
+): Promise<Blob> {
+  let quality = startQuality
+  let blob = await canvasToBlob(canvas, 'image/jpeg', quality)
+  for (let attempt = 0; attempt < 2 && blob.size > maxBytes; attempt++) {
+    // JPEG size responds to quality roughly as a square root, so this lands
+    // close on the first correction instead of creeping down step by step.
+    quality = Math.max(0.35, quality * Math.sqrt(maxBytes / blob.size))
+    blob = await canvasToBlob(canvas, 'image/jpeg', quality)
+  }
+  return blob
 }
 
 export interface CropRect {
@@ -272,6 +516,96 @@ function percentile(histogram: Uint32Array, total: number, fraction: number): nu
     if (seen >= goal) return level
   }
   return 255
+}
+
+export interface InkBounds {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/**
+ * Finds the box around everything darker than paper.
+ *
+ * A signature drawn on a phone never fills the pad, and the empty margin is
+ * what makes a drawn signature look small and lost once it is shrunk to
+ * 140 by 60. Trimming to the ink first means the stroke fills the frame the
+ * way a photographed signature does.
+ */
+export function findInkBounds(canvas: HTMLCanvasElement, threshold = 235): InkBounds | null {
+  const ctx = canvas.getContext('2d')!
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+
+  let minX = canvas.width
+  let minY = canvas.height
+  let maxX = -1
+  let maxY = -1
+
+  for (let y = 0; y < canvas.height; y++) {
+    for (let x = 0; x < canvas.width; x++) {
+      const i = (y * canvas.width + x) * 4
+      const alpha = data[i + 3]
+      if (alpha < 8) continue
+      const luminance = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]
+      if (luminance > threshold) continue
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
+      if (y < minY) minY = y
+      if (y > maxY) maxY = y
+    }
+  }
+
+  if (maxX < 0) return null
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
+}
+
+/**
+ * Draws the ink from a signature pad into an exact target size, on white,
+ * keeping its proportions and leaving a small even margin.
+ */
+export function renderTrimmedInk(
+  source: HTMLCanvasElement,
+  targetWidth: number,
+  targetHeight: number,
+  marginRatio = 0.06,
+): HTMLCanvasElement {
+  const bounds = findInkBounds(source) ?? {
+    x: 0,
+    y: 0,
+    width: source.width,
+    height: source.height,
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = targetWidth
+  canvas.height = targetHeight
+  const ctx = canvas.getContext('2d', { alpha: false })!
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, targetWidth, targetHeight)
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+
+  const marginX = targetWidth * marginRatio
+  const marginY = targetHeight * marginRatio
+  const boxWidth = Math.max(1, targetWidth - marginX * 2)
+  const boxHeight = Math.max(1, targetHeight - marginY * 2)
+  const scale = Math.min(boxWidth / bounds.width, boxHeight / bounds.height)
+  const drawWidth = bounds.width * scale
+  const drawHeight = bounds.height * scale
+
+  ctx.drawImage(
+    source,
+    bounds.x,
+    bounds.y,
+    bounds.width,
+    bounds.height,
+    (targetWidth - drawWidth) / 2,
+    (targetHeight - drawHeight) / 2,
+    drawWidth,
+    drawHeight,
+  )
+  return canvas
 }
 
 export function blobToDataUrl(blob: Blob): Promise<string> {

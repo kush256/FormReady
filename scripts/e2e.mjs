@@ -187,6 +187,29 @@ async function main() {
   await page.waitForSelector('text=Your PDF is ready', { timeout: 20000 })
   check('Split extracted 3 pages', (await page.locator('main').innerText()).includes('3 pages'))
 
+  // ---- Split opens a long document immediately, without rendering it all ----
+  await openTool(page, 'split-pdf')
+  await page.waitForSelector('text=Extract PDF pages')
+  const splitStart = Date.now()
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-long-text.pdf`])
+  await page.waitForSelector('text=of 300 selected', { timeout: 30000 })
+  const splitOpenMs = Date.now() - splitStart
+  check(`300-page PDF opens in under 6s (${splitOpenMs} ms)`, splitOpenMs < 6000, `${splitOpenMs} ms`)
+  await page.waitForSelector('main .grid img', { timeout: 15000 })
+  await page.waitForTimeout(1500)
+  const renderedThumbs = await page.locator('main .grid img').count()
+  check(
+    `Only on-screen pages are drawn (${renderedThumbs} of 300)`,
+    renderedThumbs > 0 && renderedThumbs < 60,
+    `${renderedThumbs} images`,
+  )
+  await page.locator('input[placeholder*="1-3"]').fill('5-7')
+  await page.locator('button:has-text("Apply")').click()
+  await page.waitForSelector('text=3 of 300 selected')
+  await page.locator('button:has-text("Extract 3 pages")').click()
+  await page.waitForSelector('text=Your PDF is ready', { timeout: 30000 })
+  check('Split works on a long document', (await page.locator('main').innerText()).includes('3 pages'))
+
   // ---- Image to PDF ----
   await openTool(page, 'image-to-pdf')
   await page.waitForSelector('text=Photos into one PDF')
@@ -195,6 +218,30 @@ async function main() {
   await page.locator('button:has-text("Create PDF")').click()
   await page.waitForSelector('text=Your PDF is ready', { timeout: 30000 })
   check('Image to PDF made 2 pages', (await page.locator('main').innerText()).includes('2 pages'))
+
+  // ---- Image to PDF from phone screenshots (PNG with an alpha channel) ----
+  await openTool(page, 'image-to-pdf')
+  await page.waitForSelector('text=Photos into one PDF')
+  await pickFile(page, () => page.locator('button:has-text("Select photos")').click(), [
+    `${A}/screenshot-1.png`,
+    `${A}/screenshot-2.png`,
+  ])
+  await page.waitForSelector('text=Create PDF (2 pages)', { timeout: 20000 })
+  await page.locator('button:has-text("Create PDF")').click()
+  await page.waitForSelector('text=Your PDF is ready', { timeout: 40000 })
+  const pngPdfText = await page.locator('main').innerText()
+  check('Image to PDF accepts PNG screenshots', pngPdfText.includes('2 pages'))
+  check('Image to PDF reports no failure on PNGs', !pngPdfText.includes('Could not create'))
+
+  // ---- One unreadable file does not lose the whole batch ----
+  await openTool(page, 'image-to-pdf')
+  await page.waitForSelector('text=Photos into one PDF')
+  await pickFile(page, () => page.locator('button:has-text("Select photos")').click(), [
+    `${A}/test-photo-1.jpg`,
+    `${A}/test-doc-a.pdf`,
+  ])
+  await page.waitForSelector('text=Create PDF (1 page)', { timeout: 20000 })
+  check('Unreadable file is skipped, not fatal', (await page.locator('text=Skipped 1 file').count()) > 0)
 
 
   // ---- Size field: clearing and retyping (the "stuck at 10 KB" bug) ----
@@ -324,6 +371,44 @@ async function main() {
   await page.locator('button:has-text("Prepare photo")').click()
   await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
   check('Exam-driven photo meets the exam spec', (await page.locator('main').innerText()).includes('Meets every requirement'))
+
+  // ---- Signing on the screen ----
+  await openTool(page, 'signature-maker')
+  await page.waitForSelector('text=Add your signature')
+  await page.locator('button:has-text("Sign on this screen")').click()
+  await page.waitForSelector('text=Sign here')
+  const pad = page.locator('canvas[aria-label^="Signature pad"]')
+  check('Signature pad is shown', (await pad.count()) === 1)
+  const padBox = await pad.boundingBox()
+  await page.mouse.move(padBox.x + padBox.width * 0.15, padBox.y + padBox.height * 0.6)
+  await page.mouse.down()
+  for (let i = 1; i <= 24; i++) {
+    const t = i / 24
+    await page.mouse.move(
+      padBox.x + padBox.width * (0.15 + 0.7 * t),
+      padBox.y + padBox.height * (0.6 - 0.28 * Math.sin(t * Math.PI * 2)),
+    )
+  }
+  await page.mouse.up()
+  await page.waitForTimeout(150)
+  check('Drawing enables the finish button', await page.locator('button:has-text("Use this signature")').isEnabled())
+  await page.locator('button:has-text("Undo")').click()
+  await page.waitForTimeout(100)
+  check('Undo empties the pad', await page.locator('button:has-text("Use this signature")').isDisabled())
+  await page.mouse.move(padBox.x + padBox.width * 0.2, padBox.y + padBox.height * 0.55)
+  await page.mouse.down()
+  for (let i = 1; i <= 20; i++) {
+    await page.mouse.move(
+      padBox.x + padBox.width * (0.2 + 0.6 * (i / 20)),
+      padBox.y + padBox.height * (0.55 + 0.2 * Math.sin(i / 3)),
+    )
+  }
+  await page.mouse.up()
+  await page.locator('button:has-text("Use this signature")').click()
+  await page.waitForSelector('text=Your signature is ready', { timeout: 20000 })
+  const drawnText = await page.locator('main').innerText()
+  check('Drawn signature meets the spec', drawnText.includes('140×60 px') && drawnText.includes('20 KB'))
+  check('Drawn signature reads as black ink', drawnText.includes('Black ink'))
 
   // ---- Privacy wording is present and explicit ----
   await page.goto(BASE)

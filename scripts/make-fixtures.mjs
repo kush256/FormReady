@@ -66,6 +66,46 @@ await draw('test-photo-2.jpg', 1200, 1600, PHOTO, { a: '#e07a5f', b: '#f2cc8f' }
 await draw('blue-signature.jpg', 900, 400, SIGNATURE, { ink: '#1B3F9B' })
 await draw('black-signature.jpg', 900, 400, SIGNATURE, { ink: '#141414' })
 
+/**
+ * Same as draw(), but writes a PNG and leaves the background transparent.
+ *
+ * Phone screenshots arrive as PNGs with an alpha channel, and they were what
+ * the Image to PDF failure was reported against.
+ */
+async function drawPng(name, width, height, script, args) {
+  const dataUrl = await page.evaluate(
+    ({ width, height, script, args }) => {
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')
+      // eslint-disable-next-line no-new-func
+      new Function('ctx', 'w', 'h', 'args', script)(ctx, width, height, args)
+      return canvas.toDataURL('image/png')
+    },
+    { width, height, script, args },
+  )
+  fs.writeFileSync(path.join(OUT, name), Buffer.from(dataUrl.split(',')[1], 'base64'))
+  console.log('wrote', name)
+}
+
+const SCREENSHOT = `
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(20,24,33,0.86)';
+  ctx.fillRect(0, 120, w, h - 240);
+  ctx.fillStyle = '#f4f6fb';
+  ctx.font = 'bold 64px sans-serif';
+  ctx.fillText(args.title, 60, 320);
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  for (let i = 0; i < 14; i++) {
+    ctx.fillRect(60, 420 + i * 96, w - 120 - Math.random() * 260, 44);
+  }
+`
+
+// Phone screenshot proportions, with an alpha channel and no EXIF.
+await drawPng('screenshot-1.png', 1080, 2400, SCREENSHOT, { title: 'Application' })
+await drawPng('screenshot-2.png', 1080, 2400, SCREENSHOT, { title: 'Admit card' })
+
 async function textPdf(name, pages, label) {
   const doc = await PDFDocument.create()
   const font = await doc.embedFont(StandardFonts.Helvetica)

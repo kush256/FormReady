@@ -132,7 +132,12 @@ export function ResizePhoto() {
                   {(['jpeg', 'png'] as const).map((f) => (
                     <button
                       key={f}
-                      onClick={() => setFormat(f)}
+                      onClick={() => {
+                        setFormat(f)
+                        // PNG has no quality dial, so a size limit it cannot
+                        // honour must not be left sitting there ticked.
+                        if (f === 'png') setLimitSize(false)
+                      }}
                       className={`flex-1 rounded-lg border px-3 py-2.5 text-sm font-bold transition-colors ${
                         format === f
                           ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-ink)]'
@@ -148,7 +153,7 @@ export function ResizePhoto() {
               <label className="flex items-center gap-2 text-xs text-[var(--ink-2)]">
                 <input
                   type="checkbox"
-                  checked={limitSize}
+                  checked={limitSize && format === 'jpeg'}
                   onChange={(e) => setLimitSize(e.target.checked)}
                   disabled={format === 'png'}
                 />

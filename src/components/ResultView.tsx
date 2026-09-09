@@ -48,15 +48,20 @@ export function ResultView({
 }: Props) {
   const [savedTo, setSavedTo] = useState<string | null>(null)
   const [busy, setBusy] = useState<'save' | 'share' | null>(null)
+  const [percent, setPercent] = useState(0)
   const [error, setError] = useState<string | null>(null)
+
+  // Small files land instantly; a counter that flashes past is just noise.
+  const showPercent = blob.size > 4 * 1024 * 1024
 
   const allPassed = checks.length > 0 && checks.every((c) => c.ok)
 
   async function onSave() {
     setBusy('save')
+    setPercent(0)
     setError(null)
     try {
-      const result = await saveToDevice(blob, filename)
+      const result = await saveToDevice(blob, filename, (f) => setPercent(Math.round(f * 100)))
       setSavedTo(result.location)
     } catch {
       setError('Could not save the file. Try sharing it instead.')
@@ -67,9 +72,10 @@ export function ResultView({
 
   async function onShare() {
     setBusy('share')
+    setPercent(0)
     setError(null)
     try {
-      await shareFile(blob, filename)
+      await shareFile(blob, filename, (f) => setPercent(Math.round(f * 100)))
     } catch {
       setError('Could not open the share sheet.')
     } finally {
@@ -161,13 +167,13 @@ export function ResultView({
           </div>
         ) : (
           <Button fullWidth onClick={onSave} disabled={busy !== null} icon={<DownloadIcon width={18} height={18} />}>
-            {busy === 'save' ? 'Saving…' : 'Save to device'}
+            {busy === 'save' ? (showPercent ? `Saving… ${percent}%` : 'Saving…') : 'Save to device'}
           </Button>
         )}
 
         <div className="grid grid-cols-2 gap-2.5">
           <Button variant="secondary" onClick={onShare} disabled={busy !== null} icon={<ShareIcon width={17} height={17} />}>
-            Share
+            {busy === 'share' ? (showPercent ? `${percent}%` : 'Sharing…') : 'Share'}
           </Button>
           <Button variant="secondary" onClick={onStartOver}>
             {startOverLabel}

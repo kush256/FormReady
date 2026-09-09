@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
 import { Button } from '../components/Button'
 import { pickPdfs } from '../lib/picker'
-import { renderPageThumbnails, extractPages } from '../lib/pdf'
+import { openPageThumbnails, extractPages, type PageThumbnails } from '../lib/pdf'
+import { PageThumb } from '../components/PageThumb'
 import { bytesToBlob } from '../lib/bytes'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
@@ -34,11 +35,16 @@ export function SplitPdf() {
   const [step, setStep] = useState<Step>('pick')
   const [file, setFile] = useState<File | null>(null)
   const [bytes, setBytes] = useState<Uint8Array | null>(null)
-  const [thumbs, setThumbs] = useState<string[]>([])
+  const [pages, setPages] = useState<PageThumbnails | null>(null)
+  const pageCount = pages?.pageCount ?? 0
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [rangeInput, setRangeInput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
+
+  // The open document holds a pdf.js worker; drop it when the screen goes.
+  const openDoc = useRef<PageThumbnails | null>(null)
+  useEffect(() => () => openDoc.current?.close(), [])
 
   async function pick() {
     const files = await pickPdfs(false)
@@ -48,11 +54,13 @@ export function SplitPdf() {
     try {
       const f = files[0]
       const buf = new Uint8Array(await f.arrayBuffer())
-      const pageThumbs = await renderPageThumbnails(buf)
+      const thumbnails = await openPageThumbnails(buf)
+      openDoc.current?.close()
+      openDoc.current = thumbnails
       setFile(f)
       setBytes(buf)
-      setThumbs(pageThumbs)
-      setSelected(new Set(pageThumbs.map((_, i) => i)))
+      setPages(thumbnails)
+      setSelected(new Set(Array.from({ length: thumbnails.pageCount }, (_, i) => i)))
       setStep('select')
     } catch {
       setError('Could not open this PDF. It may be encrypted or corrupted.')
@@ -71,7 +79,7 @@ export function SplitPdf() {
 
   function applyRange() {
     if (!rangeInput.trim()) return
-    setSelected(parseRange(rangeInput, thumbs.length))
+    setSelected(parseRange(rangeInput, pageCount))
   }
 
   async function generate() {
@@ -90,9 +98,11 @@ export function SplitPdf() {
   }
 
   function reset() {
+    openDoc.current?.close()
+    openDoc.current = null
     setFile(null)
     setBytes(null)
-    setThumbs([])
+    setPages(null)
     setSelected(new Set())
     setRangeInput('')
     setResultBlob(null)
@@ -123,15 +133,15 @@ export function SplitPdf() {
         )}
 
         {step === 'loading' && (
-          <ProgressPanel label="Loading pages" detail="Rendering thumbnails" />
+          <ProgressPanel label="Opening your PDF" detail="Reading the page list" />
         )}
 
         {step === 'select' && (
           <>
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-[var(--ink)]">{selected.size} of {thumbs.length} selected</h2>
+              <h2 className="text-lg font-bold text-[var(--ink)]">{selected.size} of {pageCount} selected</h2>
               <div className="flex gap-3 text-xs font-medium text-[var(--accent)]">
-                <button onClick={() => setSelected(new Set(thumbs.map((_, i) => i)))}>All</button>
+                <button onClick={() => setSelected(new Set(Array.from({ length: pageCount }, (_, i) => i)))}>All</button>
                 <button onClick={() => setSelected(new Set())}>None</button>
               </div>
             </div>
@@ -150,19 +160,10 @@ export function SplitPdf() {
             </div>
 
             <div className="grid grid-cols-3 gap-3">
-              {thumbs.map((src, i) => (
-                <button
-                  key={i}
-                  onClick={() => toggle(i)}
-                  className={`relative overflow-hidden rounded-lg border-2 ${selected.has(i) ? 'border-[var(--accent)]' : 'border-[var(--line)]'}`}
-                >
-                  <img src={src} alt={`Page ${i + 1}`} className="w-full" />
-                  <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">{i + 1}</span>
-                  {selected.has(i) && (
-                    <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] text-white">✓</span>
-                  )}
-                </button>
-              ))}
+              {pages &&
+                Array.from({ length: pageCount }, (_, i) => (
+                  <PageThumb key={i} index={i} source={pages} selected={selected.has(i)} onToggle={() => toggle(i)} />
+                ))}
             </div>
 
             <Button fullWidth disabled={selected.size === 0} onClick={generate}>
@@ -172,7 +173,7 @@ export function SplitPdf() {
         )}
 
         {step === 'processing' && (
-          <ProgressPanel label="Extracting pages" detail={`${selected.size} of ${thumbs.length}`} />
+          <ProgressPanel label="Extracting pages" detail={`${selected.size} of ${pageCount}`} />
         )}
 
         {step === 'result' && resultBlob && (
@@ -182,7 +183,7 @@ export function SplitPdf() {
             filename={`split-${file?.name ?? 'document.pdf'}`}
             summary={`${selected.size} page${selected.size !== 1 ? 's' : ''}`}
             checks={[
-              { label: `${selected.size} of ${thumbs.length} pages`, ok: true },
+              { label: `${selected.size} of ${pageCount} pages`, ok: true },
               { label: 'PDF', ok: true },
             ]}
             onStartOver={reset}

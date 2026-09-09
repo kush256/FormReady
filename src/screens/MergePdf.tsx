@@ -20,27 +20,41 @@ interface PickedPdf {
 
 type Step = 'pick' | 'processing' | 'result'
 
+/**
+ * Past roughly this much, a merge is at the edge of what a mid-range phone can
+ * hold, and the result is a file most portals would refuse anyway. We still
+ * let it run, but we say so first rather than letting it fail silently.
+ */
+const HEAVY_MERGE_BYTES = 120 * 1024 * 1024
+
 export function MergePdf() {
   const [pdfs, setPdfs] = useState<PickedPdf[]>([])
   const [step, setStep] = useState<Step>('pick')
   const [error, setError] = useState<string | null>(null)
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
+  const [reading, setReading] = useState(false)
+  const [mergedFiles, setMergedFiles] = useState(0)
+  const [mergedPages, setMergedPages] = useState(0)
 
   async function addPdfs() {
     const files = await pickPdfs(true)
     if (!files.length) return
     setError(null)
-    const loaded: PickedPdf[] = []
-    for (const file of files) {
-      try {
-        const bytes = new Uint8Array(await file.arrayBuffer())
-        const pages = await getPageCount(bytes)
-        loaded.push({ id: `${file.name}-${Date.now()}-${Math.random()}`, file, pages })
-      } catch {
-        setError(`Could not read "${file.name}" — it may be encrypted or corrupted.`)
+    setReading(true)
+    try {
+      const loaded: PickedPdf[] = []
+      for (const file of files) {
+        try {
+          const pages = await getPageCount(file)
+          loaded.push({ id: `${file.name}-${Date.now()}-${Math.random()}`, file, pages })
+        } catch {
+          setError(`Could not read "${file.name}" — it may be encrypted or corrupted.`)
+        }
       }
+      setPdfs((prev) => [...prev, ...loaded])
+    } finally {
+      setReading(false)
     }
-    setPdfs((prev) => [...prev, ...loaded])
   }
 
   function remove(id: string) {
@@ -59,15 +73,28 @@ export function MergePdf() {
 
   async function generate() {
     if (pdfs.length < 2) return
+    setMergedFiles(0)
+    setMergedPages(0)
+    setError(null)
     setStep('processing')
     try {
-      const byteArrays = await Promise.all(pdfs.map(async (p) => new Uint8Array(await p.file.arrayBuffer())))
-      const bytes = await mergePdfs(byteArrays)
+      const bytes = await mergePdfs(
+        pdfs.map((p) => p.file),
+        (done, pages) => {
+          setMergedFiles(done)
+          setMergedPages(pages)
+        },
+      )
       const blob = bytesToBlob(bytes, 'application/pdf')
       setResultBlob(blob)
       setStep('result')
-    } catch {
-      setError('Could not merge these PDFs. Please try again.')
+    } catch (err) {
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : ''
+      setError(
+        totalBytes > HEAVY_MERGE_BYTES
+          ? `Could not merge these PDFs${detail}. Together they are ${formatBytes(totalBytes)}, which is more than this phone can hold at once. Try merging them in smaller groups.`
+          : `Could not merge these PDFs${detail}. Please try again.`,
+      )
       setStep('pick')
     }
   }
@@ -81,6 +108,8 @@ export function MergePdf() {
 
 
   const totalPages = pdfs.reduce((sum, p) => sum + p.pages, 0)
+  const totalBytes = pdfs.reduce((sum, p) => sum + p.file.size, 0)
+  const heavy = totalBytes > HEAVY_MERGE_BYTES
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -99,8 +128,8 @@ export function MergePdf() {
                 title="Combine PDFs"
                 description="Add two or more PDFs and they are joined into one, in the order you arrange them."
                 action={
-                  <Button fullWidth onClick={addPdfs}>
-                    Select PDFs
+                  <Button fullWidth onClick={addPdfs} disabled={reading}>
+                    {reading ? 'Reading PDFs…' : 'Select PDFs'}
                   </Button>
                 }
               />
@@ -142,13 +171,21 @@ export function MergePdf() {
               <>
                 <button
                   onClick={addPdfs}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--line-strong)] py-6 text-sm font-bold text-[var(--accent)] active:bg-[var(--surface-sunk)]"
+                  disabled={reading}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--line-strong)] py-6 text-sm font-bold text-[var(--accent)] active:bg-[var(--surface-sunk)] disabled:opacity-60"
                 >
                   <PlusIcon width={18} height={18} />
-                  Add more PDFs
+                  {reading ? 'Reading PDFs…' : 'Add more PDFs'}
                 </button>
 
-                <Button fullWidth disabled={pdfs.length < 2} onClick={generate}>
+                {heavy && (
+                  <p className="rounded-xl bg-[var(--warn-soft)] px-4 py-3 text-xs leading-relaxed text-[var(--warn)]">
+                    These add up to {formatBytes(totalBytes)}. A merge this large can run the phone out of memory, and
+                    most upload portals cap out far below it. Merging in smaller groups is safer.
+                  </p>
+                )}
+
+                <Button fullWidth disabled={pdfs.length < 2 || reading} onClick={generate}>
                   Merge {pdfs.length >= 2 ? `(${totalPages} pages total)` : ''}
                 </Button>
                 {pdfs.length === 1 && (
@@ -160,7 +197,15 @@ export function MergePdf() {
         )}
 
         {step === 'processing' && (
-          <ProgressPanel label="Merging PDFs" detail={`${pdfs.length} files, ${totalPages} pages`} />
+          <ProgressPanel
+            label="Merging PDFs"
+            fraction={pdfs.length ? mergedFiles / pdfs.length : undefined}
+            detail={
+              mergedFiles >= pdfs.length
+                ? `Writing ${totalPages} pages`
+                : `File ${mergedFiles + 1} of ${pdfs.length} · ${mergedPages} of ${totalPages} pages copied`
+            }
+          />
         )}
 
         {step === 'result' && resultBlob && (
