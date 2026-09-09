@@ -9,6 +9,7 @@ import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
 import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
+import { SignatureIllustration } from '../components/Illustrations'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import {
   loadCappedImage,
@@ -137,9 +138,10 @@ export function SignatureMaker() {
 
         {step === 'setup' && (
           <>
-            <div>
-              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">Add your signature</h2>
-              <p className="mt-1 text-sm text-[var(--ink-2)]">
+            <div className="flex flex-col items-center pt-1 text-center">
+              <SignatureIllustration size={190} />
+              <h2 className="mt-1 text-xl font-extrabold tracking-tight text-[var(--ink)]">Add your signature</h2>
+              <p className="mx-auto mt-1.5 max-w-[32ch] text-sm leading-relaxed text-[var(--ink-2)]">
                 Sign on plain white paper in black ink, then photograph it.
               </p>
             </div>

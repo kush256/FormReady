@@ -8,6 +8,8 @@ import { imagesToPdf } from '../lib/pdf'
 import { bytesToBlob } from '../lib/bytes'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
+import { EmptyState } from '../components/EmptyState'
+import { PhotoStackIllustration } from '../components/Illustrations'
 import { PlusIcon, TrashIcon } from '../components/Icons'
 
 interface PickedImage {
@@ -108,10 +110,25 @@ export function ImageToPdf() {
 
         {step === 'pick' && (
           <>
-            <div>
-              <h2 className="mb-1 text-lg font-bold text-[var(--ink)]">Add photos</h2>
-              <p className="text-sm text-[var(--ink-2)]">Each photo becomes one page, in this order.</p>
-            </div>
+            {images.length === 0 && (
+              <EmptyState
+                illustration={<PhotoStackIllustration size={200} />}
+                title="Photos into one PDF"
+                description="Pick your photos and each becomes a page, in the order you arrange them."
+                action={
+                  <Button fullWidth onClick={addPhotos}>
+                    Select photos
+                  </Button>
+                }
+              />
+            )}
+
+            {images.length > 0 && (
+              <div>
+                <h2 className="mb-1 text-lg font-bold text-[var(--ink)]">Add photos</h2>
+                <p className="text-sm text-[var(--ink-2)]">Each photo becomes one page, in this order.</p>
+              </div>
+            )}
 
             {images.length > 0 && (
               <ul className="space-y-2">
@@ -134,17 +151,21 @@ export function ImageToPdf() {
               </ul>
             )}
 
-            <button
-              onClick={addPhotos}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--line)] py-6 text-sm font-medium text-[var(--accent)]"
-            >
-              <PlusIcon width={18} height={18} />
-              {images.length ? 'Add more photos' : 'Select photos'}
-            </button>
+            {images.length > 0 && (
+              <>
+                <button
+                  onClick={addPhotos}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--line-strong)] py-6 text-sm font-bold text-[var(--accent)] active:bg-[var(--surface-sunk)]"
+                >
+                  <PlusIcon width={18} height={18} />
+                  Add more photos
+                </button>
 
-            <Button fullWidth disabled={images.length === 0} onClick={generate}>
-              Create PDF {images.length ? `(${images.length} page${images.length > 1 ? 's' : ''})` : ''}
-            </Button>
+                <Button fullWidth onClick={generate}>
+                  Create PDF ({images.length} page{images.length > 1 ? 's' : ''})
+                </Button>
+              </>
+            )}
           </>
         )}
 

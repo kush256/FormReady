@@ -26,6 +26,16 @@ async function openTool(page, hash) {
   await page.goto(`${BASE}/#/${hash}`)
 }
 
+/** The introduction is shown once; skip past it for the rest of the suite. */
+async function completeOnboarding(page) {
+  await page.goto(BASE)
+  await page.waitForSelector('text=FormReady')
+  if ((await page.locator('button:has-text("Skip")').count()) > 0) {
+    await page.locator('button:has-text("Skip")').click()
+    await page.waitForSelector('text=Quick Tools')
+  }
+}
+
 async function pickFile(page, trigger, files) {
   const [chooser] = await Promise.all([page.waitForEvent('filechooser'), trigger()])
   await chooser.setFiles(files)
@@ -38,6 +48,23 @@ async function main() {
   // Saving falls back to a browser download outside Capacitor; capture it.
   const downloads = []
   page.on('download', (d) => downloads.push(d.suggestedFilename()))
+
+  // ---- Onboarding shows on first launch ----
+  await page.goto(BASE)
+  await page.waitForSelector('text=FormReady')
+  check('First launch shows the introduction', (await page.locator('text=Every form wants a different size').count()) > 0)
+  await page.locator('button:has-text("Next")').click()
+  await page.waitForTimeout(150)
+  check('Introduction advances', (await page.locator('text=Pick your exam, get every document').count()) > 0)
+  await page.locator('button:has-text("Next")').click()
+  await page.waitForTimeout(150)
+  check('Introduction ends on privacy', (await page.locator('text=Nothing ever leaves your phone').count()) > 0)
+  await page.locator('button:has-text("Get started")').click()
+  await page.waitForSelector('text=Quick Tools')
+  check('Introduction leads to home', (await page.locator('text=Quick Tools').count()) > 0)
+  await page.reload()
+  await page.waitForSelector('text=Quick Tools')
+  check('Introduction is not shown again', (await page.locator('text=Every form wants a different size').count()) === 0)
 
   // ---- Home ----
   await page.goto(BASE)
@@ -142,7 +169,7 @@ async function main() {
   // ---- Merge ----
   await openTool(page, 'merge-pdf')
   await page.waitForSelector('text=Combine PDFs')
-  await pickFile(page, () => page.locator('button:has-text("Select PDFs")').click(), [`${A}/test-doc-a.pdf`, `${A}/test-doc-b.pdf`])
+  await pickFile(page, () => page.locator('button:has-text("Select PDFs")').first().click(), [`${A}/test-doc-a.pdf`, `${A}/test-doc-b.pdf`])
   await page.waitForSelector('text=pages total')
   await page.locator('button:has-text("Merge (")').click()
   await page.waitForSelector('text=Your merged PDF is ready', { timeout: 20000 })
@@ -162,7 +189,7 @@ async function main() {
 
   // ---- Image to PDF ----
   await openTool(page, 'image-to-pdf')
-  await page.waitForSelector('text=Add photos')
+  await page.waitForSelector('text=Photos into one PDF')
   await pickFile(page, () => page.locator('button:has-text("Select photos")').click(), [`${A}/test-photo-1.jpg`, `${A}/test-photo-2.jpg`])
   await page.waitForSelector('text=Create PDF (2 pages)')
   await page.locator('button:has-text("Create PDF")').click()
@@ -305,10 +332,22 @@ async function main() {
   check('Home states files never leave the phone', homeText.includes('never leave this phone'))
   check('Home explains offline and no upload', homeText.includes('offline') && homeText.includes('Nothing is uploaded'))
 
+  // ---- Empty states are illustrated, not blank ----
+  for (const [hash, marker] of [
+    ['image-to-pdf', 'Photos into one PDF'],
+    ['merge-pdf', 'Combine PDFs'],
+    ['split-pdf', 'Extract PDF pages'],
+    ['compress-pdf', 'Reduce PDF size'],
+  ]) {
+    await openTool(page, hash)
+    await page.waitForSelector(`text=${marker}`)
+    const svgCount = await page.locator('main svg[role="presentation"]').count()
+    check(`${hash} empty state is illustrated`, svgCount > 0)
+  }
+
   // ---- Dark mode renders ----
   const dark = await browser.newPage({ viewport: { width: 420, height: 900 }, colorScheme: 'dark' })
-  await dark.goto(BASE)
-  await dark.waitForSelector('text=FormReady')
+  await completeOnboarding(dark)
   const bg = await dark.evaluate(() => getComputedStyle(document.body).backgroundColor)
   check('Dark mode has a dark ground', bg === 'rgb(15, 17, 22)', bg)
   const titleColour = await dark.evaluate(() => getComputedStyle(document.querySelector('h1')).color)

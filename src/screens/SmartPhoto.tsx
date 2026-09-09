@@ -10,6 +10,7 @@ import { ResultView } from '../components/ResultView'
 import { SpecChip } from '../components/SpecChip'
 import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
+import { PhotoIllustration } from '../components/Illustrations'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import { loadCappedImage, renderCrop, compressToTarget, type CropRect } from '../lib/image'
 import { validateRequirement, type ImageRequirement } from '../lib/requirements'
@@ -223,9 +224,12 @@ export function SmartPhoto() {
 
         {step === 'source' && (
           <>
-            <div>
-              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">Add your photo</h2>
-              <p className="mt-1 text-sm text-[var(--ink-2)]">Plain background, face centred and clearly visible.</p>
+            <div className="flex flex-col items-center pt-1 text-center">
+              <PhotoIllustration size={190} />
+              <h2 className="mt-1 text-xl font-extrabold tracking-tight text-[var(--ink)]">Add your photo</h2>
+              <p className="mx-auto mt-1.5 max-w-[30ch] text-sm leading-relaxed text-[var(--ink-2)]">
+                Plain background, face centred and clearly visible.
+              </p>
             </div>
             <SourceButtons onCamera={onCamera} onGallery={onGallery} />
           </>

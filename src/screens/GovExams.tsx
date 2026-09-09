@@ -4,6 +4,9 @@ import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
 import { ChevronRightIcon, SearchIcon } from '../components/Icons'
 import { EXAMS, searchExams } from '../lib/exams'
+import { EmptyState } from '../components/EmptyState'
+import { Button } from '../components/Button'
+import { SearchEmptyIllustration } from '../components/Illustrations'
 
 /** Distinct tints so exams are told apart at a glance rather than by reading. */
 const TINTS = [
@@ -63,18 +66,16 @@ export function GovExams() {
         </div>
 
         {results.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-[var(--line-strong)] p-8 text-center">
-            <p className="text-sm font-bold text-[var(--ink)]">No exam called that yet</p>
-            <p className="mt-1 text-xs leading-relaxed text-[var(--ink-2)]">
-              Use Smart Photo and type the numbers from your form instead.
-            </p>
-            <button
-              onClick={() => navigate('/smart-photo')}
-              className="mt-3 text-xs font-bold text-[var(--accent)]"
-            >
-              Open Smart Photo
-            </button>
-          </div>
+          <EmptyState
+            illustration={<SearchEmptyIllustration size={190} />}
+            title="No exam called that yet"
+            description="Open Smart Photo instead and type the numbers straight from your form."
+            action={
+              <Button fullWidth variant="secondary" onClick={() => navigate('/smart-photo')}>
+                Open Smart Photo
+              </Button>
+            }
+          />
         ) : (
           <ul className="space-y-2.5">
             {results.map((exam, i) => {

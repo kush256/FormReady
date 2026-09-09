@@ -7,6 +7,8 @@ import { renderPageThumbnails, extractPages } from '../lib/pdf'
 import { bytesToBlob } from '../lib/bytes'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
+import { EmptyState } from '../components/EmptyState'
+import { SplitIllustration } from '../components/Illustrations'
 
 type Step = 'pick' | 'loading' | 'select' | 'processing' | 'result'
 
@@ -108,18 +110,16 @@ export function SplitPdf() {
         )}
 
         {step === 'pick' && (
-          <>
-            <div>
-              <h2 className="mb-1 text-lg font-bold text-[var(--ink)]">Extract PDF pages</h2>
-              <p className="text-sm text-[var(--ink-2)]">Choose a PDF, then pick the pages you need.</p>
-            </div>
-            <button
-              onClick={pick}
-              className="flex w-full flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-[var(--line)] py-10 text-[var(--accent)]"
-            >
-              <span className="text-sm font-medium">Select PDF</span>
-            </button>
-          </>
+          <EmptyState
+            illustration={<SplitIllustration size={200} />}
+            title="Extract PDF pages"
+            description="Choose a PDF and pick only the pages you need, by tapping them or typing a range."
+            action={
+              <Button fullWidth onClick={pick}>
+                Select PDF
+              </Button>
+            }
+          />
         )}
 
         {step === 'loading' && (

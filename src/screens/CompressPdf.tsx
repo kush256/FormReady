@@ -7,6 +7,8 @@ import { ResultView } from '../components/ResultView'
 import { SpecChip } from '../components/SpecChip'
 import { SizeField } from '../components/SizeField'
 import { Notice } from '../components/Notice'
+import { EmptyState } from '../components/EmptyState'
+import { CompressIllustration } from '../components/Illustrations'
 import { pickPdfs } from '../lib/picker'
 import {
   compressPdf,
@@ -147,19 +149,16 @@ export function CompressPdf() {
         )}
 
         {step === 'pick' && (
-          <>
-            <div>
-              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">Reduce PDF size</h2>
-              <p className="mt-1 text-sm text-[var(--ink-2)]">Choose a PDF and the limit it has to fit under.</p>
-            </div>
-            <button
-              onClick={pick}
-              className="flex w-full flex-col items-center gap-1 rounded-2xl border-2 border-dashed border-[var(--line-strong)] py-12 text-[var(--accent)] active:bg-[var(--surface-sunk)]"
-            >
-              <span className="text-sm font-bold">Select PDF</span>
-              <span className="text-xs text-[var(--ink-2)]">Stays on your device</span>
-            </button>
-          </>
+          <EmptyState
+            illustration={<CompressIllustration size={200} />}
+            title="Reduce PDF size"
+            description="Choose a PDF and the limit it has to fit under. Photo pages are re-encoded; text pages stay sharp."
+            action={
+              <Button fullWidth onClick={pick}>
+                Select PDF
+              </Button>
+            }
+          />
         )}
 
         {step === 'setup' && file && (

@@ -8,6 +8,8 @@ import { formatBytes } from '../lib/format'
 import { bytesToBlob } from '../lib/bytes'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
+import { EmptyState } from '../components/EmptyState'
+import { MergeIllustration } from '../components/Illustrations'
 import { PlusIcon, TrashIcon } from '../components/Icons'
 
 interface PickedPdf {
@@ -91,10 +93,25 @@ export function MergePdf() {
 
         {step === 'pick' && (
           <>
-            <div>
-              <h2 className="mb-1 text-lg font-bold text-[var(--ink)]">Combine PDFs</h2>
-              <p className="text-sm text-[var(--ink-2)]">Add two or more PDFs. They'll be combined in this order.</p>
-            </div>
+            {pdfs.length === 0 && (
+              <EmptyState
+                illustration={<MergeIllustration size={200} />}
+                title="Combine PDFs"
+                description="Add two or more PDFs and they are joined into one, in the order you arrange them."
+                action={
+                  <Button fullWidth onClick={addPdfs}>
+                    Select PDFs
+                  </Button>
+                }
+              />
+            )}
+
+            {pdfs.length > 0 && (
+              <div>
+                <h2 className="mb-1 text-lg font-bold text-[var(--ink)]">Combine PDFs</h2>
+                <p className="text-sm text-[var(--ink-2)]">They'll be combined in this order.</p>
+              </div>
+            )}
 
             {pdfs.length > 0 && (
               <ul className="space-y-2">
@@ -121,19 +138,23 @@ export function MergePdf() {
               </ul>
             )}
 
-            <button
-              onClick={addPdfs}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--line)] py-6 text-sm font-medium text-[var(--accent)]"
-            >
-              <PlusIcon width={18} height={18} />
-              {pdfs.length ? 'Add more PDFs' : 'Select PDFs'}
-            </button>
+            {pdfs.length > 0 && (
+              <>
+                <button
+                  onClick={addPdfs}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--line-strong)] py-6 text-sm font-bold text-[var(--accent)] active:bg-[var(--surface-sunk)]"
+                >
+                  <PlusIcon width={18} height={18} />
+                  Add more PDFs
+                </button>
 
-            <Button fullWidth disabled={pdfs.length < 2} onClick={generate}>
-              Merge {pdfs.length >= 2 ? `(${totalPages} pages total)` : ''}
-            </Button>
-            {pdfs.length === 1 && (
-              <p className="text-center text-xs text-[var(--ink-2)]">Add at least one more PDF to merge.</p>
+                <Button fullWidth disabled={pdfs.length < 2} onClick={generate}>
+                  Merge {pdfs.length >= 2 ? `(${totalPages} pages total)` : ''}
+                </Button>
+                {pdfs.length === 1 && (
+                  <p className="text-center text-xs text-[var(--ink-2)]">Add at least one more PDF to merge.</p>
+                )}
+              </>
             )}
           </>
         )}
