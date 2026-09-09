@@ -7,6 +7,7 @@ import { ImageCropper } from '../components/ImageCropper'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
 import { Notice } from '../components/Notice'
+import { NumberField } from '../components/NumberField'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import { loadCappedImage, renderCrop, compressToTarget, canvasToBlob, type CropRect } from '../lib/image'
 import { validateRequirement } from '../lib/requirements'
@@ -115,27 +116,13 @@ export function ResizePhoto() {
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
                     Width (px)
                   </span>
-                  <input
-                    type="number"
-                    value={width}
-                    min={10}
-                    aria-invalid={issue ? 'true' : 'false'}
-                    onChange={(e) => setWidth(Math.max(10, Number(e.target.value) || 0))}
-                    className="fr-field mt-1"
-                  />
+                  <div className="mt-1"><NumberField value={width} min={10} invalid={!!issue} onChange={setWidth} ariaLabel="Width in pixels" /></div>
                 </label>
                 <label>
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
                     Height (px)
                   </span>
-                  <input
-                    type="number"
-                    value={height}
-                    min={10}
-                    aria-invalid={issue ? 'true' : 'false'}
-                    onChange={(e) => setHeight(Math.max(10, Number(e.target.value) || 0))}
-                    className="fr-field mt-1"
-                  />
+                  <div className="mt-1"><NumberField value={height} min={10} invalid={!!issue} onChange={setHeight} ariaLabel="Height in pixels" /></div>
                 </label>
               </div>
 
@@ -173,14 +160,7 @@ export function ResizePhoto() {
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
                     Maximum size (KB)
                   </span>
-                  <input
-                    type="number"
-                    value={maxKb}
-                    min={5}
-                    aria-invalid={issue ? 'true' : 'false'}
-                    onChange={(e) => setMaxKb(Math.max(5, Number(e.target.value) || 0))}
-                    className="fr-field mt-1"
-                  />
+                  <div className="mt-1"><NumberField value={maxKb} min={1} invalid={!!issue} onChange={setMaxKb} ariaLabel="Maximum size in KB" /></div>
                 </label>
               )}
             </div>

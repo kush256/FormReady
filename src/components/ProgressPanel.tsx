@@ -24,17 +24,19 @@ export function ProgressPanel({ label, fraction, detail, currentBytes, targetByt
     <div className="flex flex-col gap-5 py-8">
       <div className="text-center">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">{label}</p>
-        {currentBytes !== undefined ? (
-          <p className="mt-2 font-mono text-3xl font-semibold tracking-tight text-[var(--ink)] tabular-nums">
-            {formatBytes(currentBytes)}
+        <p className="mt-2 font-mono text-3xl font-semibold tracking-tight text-[var(--ink)] tabular-nums">
+          {pct === undefined ? '…' : `${pct}%`}
+        </p>
+        {currentBytes !== undefined && (
+          <p className="mt-1 text-xs text-[var(--ink-2)]">
+            <span className="font-mono tabular-nums">{formatBytes(currentBytes)}</span> written
+            {targetBytes !== undefined && (
+              <>
+                {' · '}
+                <span className="font-mono tabular-nums">{formatBytes(targetBytes)}</span> target
+              </>
+            )}
           </p>
-        ) : (
-          <p className="mt-2 font-mono text-3xl font-semibold tracking-tight text-[var(--ink)] tabular-nums">
-            {pct === undefined ? '…' : `${pct}%`}
-          </p>
-        )}
-        {targetBytes !== undefined && (
-          <p className="mt-1 text-xs text-[var(--ink-2)]">target {formatBytes(targetBytes)}</p>
         )}
       </div>
 

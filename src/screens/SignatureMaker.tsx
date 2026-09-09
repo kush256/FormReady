@@ -7,6 +7,7 @@ import { ImageCropper } from '../components/ImageCropper'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
 import { Notice } from '../components/Notice'
+import { NumberField } from '../components/NumberField'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import {
   loadCappedImage,
@@ -137,25 +138,17 @@ export function SignatureMaker() {
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
                     Width (px)
                   </span>
-                  <input
-                    type="number"
-                    value={width}
-                    min={40}
-                    onChange={(e) => setWidth(Math.max(40, Number(e.target.value) || 0))}
-                    className="fr-field mt-1"
-                  />
+                  <div className="mt-1">
+                    <NumberField value={width} min={40} onChange={setWidth} ariaLabel="Width in pixels" />
+                  </div>
                 </label>
                 <label>
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
                     Height (px)
                   </span>
-                  <input
-                    type="number"
-                    value={height}
-                    min={20}
-                    onChange={(e) => setHeight(Math.max(20, Number(e.target.value) || 0))}
-                    className="fr-field mt-1"
-                  />
+                  <div className="mt-1">
+                    <NumberField value={height} min={20} onChange={setHeight} ariaLabel="Height in pixels" />
+                  </div>
                 </label>
               </div>
               <label className="flex items-center gap-2 text-xs text-[var(--ink-2)]">

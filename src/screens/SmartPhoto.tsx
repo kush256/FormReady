@@ -8,6 +8,7 @@ import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
 import { SpecChip } from '../components/SpecChip'
 import { Notice } from '../components/Notice'
+import { NumberField } from '../components/NumberField'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import { loadCappedImage, renderCrop, compressToTarget, type CropRect } from '../lib/image'
 import { validateRequirement, type ImageRequirement } from '../lib/requirements'
@@ -168,13 +169,16 @@ export function SmartPhoto() {
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
                       {label}
                     </span>
-                    <input
-                      type="number"
-                      value={custom[key]}
-                      aria-invalid={issue ? 'true' : 'false'}
-                      onChange={(e) => setCustom({ ...custom, [key]: Math.max(0, Number(e.target.value) || 0) })}
-                      className="fr-field mt-1 px-2 text-sm"
-                    />
+                    <div className="mt-1">
+                      <NumberField
+                        value={custom[key]}
+                        min={key === 'maxKb' ? 1 : 20}
+                        invalid={!!issue}
+                        ariaLabel={label}
+                        onChange={(v) => setCustom({ ...custom, [key]: v })}
+                        className="px-2 text-sm"
+                      />
+                    </div>
                   </label>
                 ))}
               </div>

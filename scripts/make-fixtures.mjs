@@ -101,4 +101,79 @@ await textPdf('test-doc-b.pdf', 2, 'Document B')
 await textPdf('test-doc-big.pdf', 6, 'Big document')
 await imagePdf('test-doc-heavy.pdf')
 
+/**
+ * A long, heavy document in the shape that crashed the app on a real phone:
+ * tens of pages of high-entropy photography. Each page gets its own image so
+ * the PDF can't dedupe them down to something small.
+ */
+async function hugePdf(name, pages) {
+  const doc = await PDFDocument.create()
+  for (let i = 0; i < pages; i++) {
+    const dataUrl = await page.evaluate(
+      ({ seed }) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1000
+        canvas.height = 1400
+        const ctx = canvas.getContext('2d')
+        const image = ctx.createImageData(canvas.width, canvas.height)
+        const data = image.data
+        // Pseudo-random noise compresses badly, which is the point.
+        let state = seed * 2654435761
+        for (let p = 0; p < data.length; p += 4) {
+          state = (state * 1103515245 + 12345) & 0x7fffffff
+          data[p] = state & 0xff
+          data[p + 1] = (state >> 8) & 0xff
+          data[p + 2] = (state >> 16) & 0xff
+          data[p + 3] = 255
+        }
+        ctx.putImageData(image, 0, 0)
+        // Soften slightly so it compresses like a scan rather than pure static.
+        ctx.filter = 'blur(1.5px)'
+        ctx.drawImage(canvas, 0, 0)
+        ctx.filter = 'none'
+        return canvas.toDataURL('image/jpeg', 0.82)
+      },
+      { seed: i + 1 },
+    )
+    const bytes = Buffer.from(dataUrl.split(',')[1], 'base64')
+    const embedded = await doc.embedJpg(bytes)
+    const pdfPage = doc.addPage([595, 842])
+    pdfPage.drawImage(embedded, { x: 0, y: 0, width: 595, height: 842 })
+  }
+  const out = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), out)
+  console.log('wrote', name, (out.byteLength / 1024 / 1024).toFixed(1), 'MB', `(${pages} pages)`)
+}
+
+/** Text pages and photo pages in one file: the case where keeping text sharp matters. */
+async function mixedPdf(name) {
+  const doc = await PDFDocument.create()
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  const photo = fs.readFileSync(path.join(OUT, 'test-photo-1.jpg'))
+  for (let i = 0; i < 6; i++) {
+    if (i % 2 === 0) {
+      const p = doc.addPage([595, 842])
+      p.drawText(`Text page ${i + 1}`, { x: 50, y: 780, size: 24, font })
+      for (let j = 0; j < 30; j++) {
+        p.drawText(`Line ${j} that must stay sharp and selectable after compression.`, {
+          x: 50,
+          y: 730 - j * 16,
+          size: 11,
+          font,
+        })
+      }
+    } else {
+      const embedded = await doc.embedJpg(photo)
+      const p = doc.addPage([595, 842])
+      p.drawImage(embedded, { x: 20, y: 20, width: 555, height: 800 })
+    }
+  }
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log('wrote', name, bytes.byteLength, 'bytes')
+}
+
+await mixedPdf('test-doc-mixed.pdf')
+await hugePdf('test-doc-huge.pdf', 41)
+
 await browser.close()

@@ -1,13 +1,21 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
 import { Button } from '../components/Button'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
 import { SpecChip } from '../components/SpecChip'
+import { SizeField } from '../components/SizeField'
+import { Notice } from '../components/Notice'
 import { pickPdfs } from '../lib/picker'
-import { compressPdf, isCancellation, type CompressProgress, type CompressPdfResult } from '../lib/pdf'
-import { formatBytes, kbToBytes } from '../lib/format'
+import {
+  compressPdf,
+  isCancellation,
+  PdfTooLargeError,
+  type CompressProgress,
+  type CompressPdfResult,
+} from '../lib/pdf'
+import { formatBytes } from '../lib/format'
 import { bytesToBlob } from '../lib/bytes'
 
 type Step = 'pick' | 'setup' | 'working' | 'result'
@@ -18,33 +26,68 @@ const PHASE_LABEL: Record<CompressProgress['phase'], string> = {
   compressing: 'Compressing',
 }
 
+const MIN_TARGET_BYTES = 5 * 1024
+
+function formatEta(seconds: number): string {
+  if (seconds < 5) return 'almost done'
+  if (seconds < 60) return `about ${seconds}s left`
+  const minutes = Math.round(seconds / 60)
+  return `about ${minutes} min left`
+}
+
 export function CompressPdf() {
   const [step, setStep] = useState<Step>('pick')
   const [file, setFile] = useState<File | null>(null)
-  const [maxKb, setMaxKb] = useState(500)
+  const [targetBytes, setTargetBytes] = useState(500 * 1024)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<CompressProgress | null>(null)
   const [result, setResult] = useState<CompressPdfResult | null>(null)
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
+  // Everything the user could get wrong, caught before any work happens.
+  const issue = useMemo(() => {
+    if (!file) return null
+    if (targetBytes < MIN_TARGET_BYTES) {
+      return {
+        title: 'That target is too small',
+        detail: `A PDF needs at least ${formatBytes(MIN_TARGET_BYTES)} to hold anything readable. Set a larger limit.`,
+        fixes: [{ label: 'Use 100 KB', bytes: 100 * 1024 }],
+      }
+    }
+    if (targetBytes >= file.size) {
+      return {
+        title: 'This PDF is already that small',
+        detail: `${file.name} is ${formatBytes(file.size)}, which is under your ${formatBytes(targetBytes)} limit. Compressing it would only lose quality.`,
+        fixes: [
+          { label: `Use ${formatBytes(Math.round(file.size / 2))}`, bytes: Math.round(file.size / 2) },
+        ],
+      }
+    }
+    return null
+  }, [file, targetBytes])
+
   async function pick() {
     const files = await pickPdfs(false)
     if (!files.length) return
     setError(null)
-    setFile(files[0])
+    const picked = files[0]
+    setFile(picked)
+    // Default to half the original, which is a sane starting point and is
+    // never immediately invalid.
+    setTargetBytes(Math.max(MIN_TARGET_BYTES, Math.round(picked.size / 2)))
     setStep('setup')
   }
 
   async function process() {
-    if (!file) return
+    if (!file || issue) return
     const controller = new AbortController()
     abortRef.current = controller
     setProgress(null)
     setStep('working')
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const outcome = await compressPdf(bytes, kbToBytes(maxKb), {
+      const outcome = await compressPdf(bytes, targetBytes, {
         signal: controller.signal,
         onProgress: setProgress,
       })
@@ -53,6 +96,11 @@ export function CompressPdf() {
       setStep('result')
     } catch (e) {
       if (isCancellation(e)) {
+        setStep('setup')
+      } else if (e instanceof PdfTooLargeError) {
+        setError(
+          'This PDF is too large for this device to compress in one go. Try splitting it into smaller parts first, then compressing each part.',
+        )
         setStep('setup')
       } else {
         setError('Could not compress this PDF. It may be encrypted or damaged.')
@@ -77,13 +125,25 @@ export function CompressPdf() {
       ? Math.max(0, Math.round((1 - result.finalBytes / result.originalBytes) * 100))
       : 0
 
+  const progressDetail = (() => {
+    if (!progress) return undefined
+    const parts: string[] = []
+    if (progress.pageCount > 0 && progress.page > 0) {
+      parts.push(`Page ${progress.page} of ${progress.pageCount}`)
+    }
+    if (progress.etaSeconds !== undefined) parts.push(formatEta(progress.etaSeconds))
+    return parts.join(' · ') || undefined
+  })()
+
   return (
     <div className="flex min-h-screen flex-col">
       <ScreenHeader title="Compress PDF" subtitle={file ? file.name : undefined} />
 
       <main className="flex-1 space-y-5 px-5 py-4">
         {error && (
-          <p className="rounded-xl bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">{error}</p>
+          <p className="rounded-xl bg-[var(--danger-soft)] px-4 py-3 text-sm leading-relaxed text-[var(--danger)]">
+            {error}
+          </p>
         )}
 
         {step === 'pick' && (
@@ -111,35 +171,43 @@ export function CompressPdf() {
               </div>
             </div>
 
-            <label className="block">
+            <div>
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                Maximum size (KB)
+                Maximum size
               </span>
-              <input
-                type="number"
-                value={maxKb}
-                min={10}
-                onChange={(e) => setMaxKb(Math.max(10, Number(e.target.value) || 0))}
-                className="fr-field mt-1.5"
-              />
-            </label>
+              <div className="mt-1.5">
+                <SizeField bytes={targetBytes} onChange={setTargetBytes} invalid={!!issue} />
+              </div>
+            </div>
 
             <div className="flex flex-wrap gap-2">
-              {[100, 200, 500, 1024].map((kb) => (
-                <button key={kb} onClick={() => setMaxKb(kb)}>
-                  <SpecChip state={maxKb === kb ? 'ok' : 'neutral'} icon={false}>
-                    {kb >= 1024 ? '1 MB' : `${kb} KB`}
+              {[100 * 1024, 500 * 1024, 1024 * 1024, 5 * 1024 * 1024].map((bytes) => (
+                <button key={bytes} onClick={() => setTargetBytes(bytes)}>
+                  <SpecChip state={targetBytes === bytes ? 'ok' : 'neutral'} icon={false}>
+                    {formatBytes(bytes)}
                   </SpecChip>
                 </button>
               ))}
             </div>
+
+            {issue && (
+              <Notice
+                title={issue.title}
+                actions={issue.fixes.map((fix) => ({
+                  label: fix.label,
+                  onClick: () => setTargetBytes(fix.bytes),
+                }))}
+              >
+                {issue.detail}
+              </Notice>
+            )}
 
             <p className="text-xs leading-relaxed text-[var(--ink-2)]">
               Pages carrying photos are re-encoded to hit the target. Text-only pages are left untouched, so they stay
               sharp and selectable.
             </p>
 
-            <Button fullWidth onClick={process}>
+            <Button fullWidth disabled={!!issue} onClick={process}>
               Compress PDF
             </Button>
           </>
@@ -147,15 +215,11 @@ export function CompressPdf() {
 
         {step === 'working' && (
           <ProgressPanel
-            label={progress ? PHASE_LABEL[progress.phase] : 'Starting'}
+            label={progress ? PHASE_LABEL[progress.phase] : 'Reading the file'}
             fraction={progress?.fraction}
-            currentBytes={progress?.bytesSoFar || undefined}
-            targetBytes={kbToBytes(maxKb)}
-            detail={
-              progress && progress.pageCount > 0 && progress.page > 0
-                ? `Page ${progress.page} of ${progress.pageCount}`
-                : undefined
-            }
+            currentBytes={progress?.phase === 'compressing' ? progress.bytesSoFar : undefined}
+            targetBytes={targetBytes}
+            detail={progressDetail}
             onCancel={() => abortRef.current?.abort()}
           />
         )}
@@ -169,7 +233,7 @@ export function CompressPdf() {
             summary={savedPercent > 0 ? `${savedPercent}% smaller` : 'Compressed'}
             checks={[
               {
-                label: result.metTarget ? `Under ${maxKb} KB` : `Target ${maxKb} KB`,
+                label: result.metTarget ? `Under ${formatBytes(targetBytes)}` : `Target ${formatBytes(targetBytes)}`,
                 ok: result.metTarget,
               },
               ...(result.copiedPages > 0
@@ -179,7 +243,7 @@ export function CompressPdf() {
             warning={
               result.metTarget
                 ? undefined
-                : `This PDF couldn't go under ${maxKb} KB without becoming unreadable. Try a higher limit, or split it into fewer pages first.`
+                : `This PDF couldn't go under ${formatBytes(targetBytes)} without becoming unreadable. Try a higher limit, or split it into fewer pages first.`
             }
             onStartOver={reset}
             startOverLabel="Another PDF"

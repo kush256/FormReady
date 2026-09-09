@@ -51,7 +51,7 @@ async function main() {
   await openTool(page, 'smart-photo')
   await page.waitForSelector('text=What does the form need?')
   await page.locator('text=Custom requirement').click()
-  const nums = page.locator('input[type=number]')
+  const nums = page.locator('input[inputmode="numeric"]')
   await nums.nth(0).fill('3000')
   await nums.nth(1).fill('4000')
   await nums.nth(2).fill('20')
@@ -115,7 +115,7 @@ async function main() {
   await page.waitForSelector('text=Reduce PDF size')
   await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-heavy.pdf`])
   await page.waitForSelector('text=Maximum size')
-  await page.locator('input[type=number]').fill('200')
+  await page.locator('input[inputmode="numeric"], input[inputmode="decimal"]').first().fill('200')
   const t0 = Date.now()
   await page.locator('button:has-text("Compress PDF")').click()
   await page.waitForSelector('button:has-text("Save to device")', { timeout: 90000 })
@@ -125,18 +125,19 @@ async function main() {
   check('Image PDF compressed smaller', cpSizes.length >= 2 && cpSizes[1] < cpSizes[0], JSON.stringify(cpSizes))
   console.log(`      image-heavy 848KB -> 200KB target took ${heavyMs}ms`)
 
-  // ---- Compress PDF: text-only doc should stay sharp, and be fast ----
+  // ---- Mixed document: text pages must survive untouched ----
   await openTool(page, 'compress-pdf')
   await page.waitForSelector('text=Reduce PDF size')
-  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-big.pdf`])
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-mixed.pdf`])
   await page.waitForSelector('text=Maximum size')
-  await page.locator('input[type=number]').fill('4')
+  await page.locator('input[inputmode="numeric"], input[inputmode="decimal"]').first().fill('150')
   const t1 = Date.now()
   await page.locator('button:has-text("Compress PDF")').click()
   await page.waitForSelector('button:has-text("Save to device")', { timeout: 60000 })
-  const textMs = Date.now() - t1
-  console.log(`      text-only 5KB doc took ${textMs}ms`)
-  check('Text-only compression is quick', textMs < 8000, `${textMs}ms`)
+  const mixedMs = Date.now() - t1
+  const mixedText = await page.locator('main').innerText()
+  console.log(`      mixed 503KB doc took ${mixedMs}ms`)
+  check('Text pages kept sharp in a mixed doc', mixedText.includes('text pages kept sharp'), mixedText.match(/\d+ text pages kept sharp/)?.[0] ?? '')
 
   // ---- Merge ----
   await openTool(page, 'merge-pdf')
@@ -167,6 +168,81 @@ async function main() {
   await page.locator('button:has-text("Create PDF")').click()
   await page.waitForSelector('text=Your PDF is ready', { timeout: 30000 })
   check('Image to PDF made 2 pages', (await page.locator('main').innerText()).includes('2 pages'))
+
+
+  // ---- Size field: clearing and retyping (the "stuck at 10 KB" bug) ----
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-heavy.pdf`])
+  await page.waitForSelector('text=Maximum size')
+  const sizeField = page.locator('input[inputmode="numeric"], input[inputmode="decimal"]').first()
+  await sizeField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  const afterClear = await sizeField.inputValue()
+  check('Size field can be cleared', afterClear === '', JSON.stringify(afterClear))
+  await page.keyboard.type('700')
+  const typed = await sizeField.inputValue()
+  check('Size field accepts a retyped value', typed === '700', typed)
+
+  // ---- Unit toggle: people read limits in MB too ----
+  await page.getByRole('button', { name: 'MB', exact: true }).click()
+  await page.waitForTimeout(150)
+  const mbField = page.locator('input[inputmode="decimal"]').first()
+  await mbField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('2')
+  await page.locator('body').click()
+  await page.waitForTimeout(200)
+  check('MB unit is selectable', (await page.locator('button[aria-pressed="true"]:has-text("MB")').count()) > 0)
+
+  // ---- Wrong values are refused with an explanation ----
+  await page.getByRole('button', { name: 'KB', exact: true }).click()
+  const kbField = page.locator('input[inputmode="numeric"]').first()
+  await kbField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('0')
+  await page.locator('body').click()
+  await page.waitForTimeout(250)
+  check('Zero target is refused', (await page.locator('text=too small').count()) > 0)
+  check('Compress blocked on a zero target', await page.locator('button:has-text("Compress PDF")').isDisabled())
+
+  await kbField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('99999')
+  await page.locator('body').click()
+  await page.waitForTimeout(250)
+  check('Target larger than the file is refused', (await page.locator('text=already that small').count()) > 0)
+
+  // ---- Large document: the case that crashed on device ----
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-huge.pdf`])
+  await page.waitForSelector('text=Maximum size')
+  // A 10 MB file defaults the unit to MB, so aim at 2 MB in that unit.
+  await page.getByRole('button', { name: 'MB', exact: true }).click()
+  const hugeField = page.locator('input[inputmode="decimal"]').first()
+  await hugeField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('2')
+  await page.locator('body').click()
+  await page.waitForTimeout(200)
+  const tHuge = Date.now()
+  await page.locator('button:has-text("Compress PDF")').click()
+  // Progress must appear and report pages, not sit blank.
+  await page.waitForSelector('text=Page ', { timeout: 60000 })
+  check('Large file reports page progress', (await page.locator('text=Page ').count()) > 0)
+  await page.waitForSelector('button:has-text("Save to device")', { timeout: 180000 })
+  const hugeMs = Date.now() - tHuge
+  const hugeText = await page.locator('main').innerText()
+  console.log(`      10 MB / 41 pages -> 2 MB target took ${(hugeMs / 1000).toFixed(1)}s`)
+  check('Large file compressed without crashing', hugeText.includes('smaller') || hugeText.includes('ready'))
+  const hugeSizes = [...hugeText.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
+  check('Large file actually shrank', hugeSizes.length >= 2 && hugeSizes[1] < hugeSizes[0], JSON.stringify(hugeSizes))
 
   // ---- Dark mode renders ----
   const dark = await browser.newPage({ viewport: { width: 420, height: 900 }, colorScheme: 'dark' })
