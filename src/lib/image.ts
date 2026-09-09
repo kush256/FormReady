@@ -292,6 +292,17 @@ function revokeIfObjectUrl(src: string) {
 }
 
 /**
+ * Releases the file behind a loaded image.
+ *
+ * loadImage hands back an <img> pointing at an object URL, and an object URL
+ * keeps its blob alive until it is revoked. Preparing a dozen photos in one
+ * session without this leaves every one of them in memory.
+ */
+export function releaseImage(img: HTMLImageElement | null | undefined): void {
+  if (img) revokeIfObjectUrl(img.src)
+}
+
+/**
  * Decodes a photo straight to the size we actually want.
  *
  * Passing the target size to createImageBitmap lets the browser scale during

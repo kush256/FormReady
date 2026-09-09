@@ -15,6 +15,7 @@ import { PenIcon } from '../components/Icons'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import {
   loadCappedImage,
+  releaseImage,
   renderCrop,
   compressToTarget,
   whitenBackground,
@@ -78,7 +79,10 @@ export function SignatureMaker() {
     try {
       setError(null)
       const image = await loadCappedImage(file)
-      setImg(image)
+      setImg((previous) => {
+        releaseImage(previous)
+        return image
+      })
       setStep('crop')
     } catch {
       setError('Could not open that image. Try a different file.')
@@ -171,7 +175,10 @@ export function SignatureMaker() {
       return null
     })
     setDrawn(false)
-    setImg(null)
+    setImg((previous) => {
+      releaseImage(previous)
+      return null
+    })
     setCrop(null)
     setResultBlob(null)
     setError(null)

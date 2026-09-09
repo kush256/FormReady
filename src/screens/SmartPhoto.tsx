@@ -12,7 +12,7 @@ import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
 import { PhotoIllustration } from '../components/Illustrations'
 import { captureFromCamera, pickImages } from '../lib/picker'
-import { loadCappedImage, renderCrop, compressToTarget, type CropRect } from '../lib/image'
+import { loadCappedImage, releaseImage, renderCrop, compressToTarget, type CropRect } from '../lib/image'
 import { validateRequirement, type ImageRequirement } from '../lib/requirements'
 import { kbToBytes } from '../lib/format'
 
@@ -70,7 +70,10 @@ export function SmartPhoto() {
       setError(null)
       setSourceBytes(file.size)
       const image = await loadCappedImage(file)
-      setImg(image)
+      setImg((previous) => {
+        releaseImage(previous)
+        return image
+      })
       setStep('crop')
     } catch {
       setError('Could not open that photo. Try a different file.')
@@ -103,7 +106,10 @@ export function SmartPhoto() {
   }
 
   function reset() {
-    setImg(null)
+    setImg((previous) => {
+      releaseImage(previous)
+      return null
+    })
     setCrop(null)
     setResultBlob(null)
     setResultUrl(null)

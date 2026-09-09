@@ -9,7 +9,7 @@ import { ResultView } from '../components/ResultView'
 import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
 import { captureFromCamera, pickImages } from '../lib/picker'
-import { loadCappedImage, renderCrop, compressToTarget, canvasToBlob, type CropRect } from '../lib/image'
+import { loadCappedImage, releaseImage, renderCrop, compressToTarget, canvasToBlob, type CropRect } from '../lib/image'
 import { validateRequirement } from '../lib/requirements'
 import { kbToBytes } from '../lib/format'
 
@@ -45,7 +45,10 @@ export function ResizePhoto() {
       setError(null)
       setSourceBytes(file.size)
       const image = await loadCappedImage(file)
-      setImg(image)
+      setImg((previous) => {
+        releaseImage(previous)
+        return image
+      })
       setStep('crop')
     } catch {
       setError('Could not open that photo. Try a different file.')
@@ -86,7 +89,10 @@ export function ResizePhoto() {
   }
 
   function reset() {
-    setImg(null)
+    setImg((previous) => {
+      releaseImage(previous)
+      return null
+    })
     setCrop(null)
     setResultBlob(null)
     setResultUrl(null)
