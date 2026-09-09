@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
 import { Button } from '../components/Button'
@@ -24,12 +25,23 @@ type Step = 'setup' | 'crop' | 'working' | 'result'
 
 const DEFAULT_WIDTH = 140
 const DEFAULT_HEIGHT = 60
-const MAX_KB = 20
+const DEFAULT_MAX_KB = 20
+
+/** Set when arriving from a Government Exams document. */
+interface Prefill {
+  requirement?: { width: number; height: number; maxKb: number }
+  label?: string
+  context?: string
+}
 
 export function SignatureMaker() {
+  const prefill = (useLocation().state ?? null) as Prefill | null
+  const preset = prefill?.requirement
+
   const [step, setStep] = useState<Step>('setup')
-  const [width, setWidth] = useState(DEFAULT_WIDTH)
-  const [height, setHeight] = useState(DEFAULT_HEIGHT)
+  const [width, setWidth] = useState(preset?.width ?? DEFAULT_WIDTH)
+  const [height, setHeight] = useState(preset?.height ?? DEFAULT_HEIGHT)
+  const [maxKb, setMaxKb] = useState(preset?.maxKb ?? DEFAULT_MAX_KB)
   const [cleanBackground, setCleanBackground] = useState(true)
 
   const [img, setImg] = useState<HTMLImageElement | null>(null)
@@ -69,7 +81,7 @@ export function SignatureMaker() {
 
   async function encodeCurrentCanvas() {
     const canvas = cropCanvas.current!
-    const result = await compressToTarget(canvas, { maxBytes: kbToBytes(MAX_KB), minQuality: 0.3 })
+    const result = await compressToTarget(canvas, { maxBytes: kbToBytes(maxKb), minQuality: 0.3 })
     setResultBlob(result.blob)
     setResultUrl(URL.createObjectURL(result.blob))
     setMetSize(result.metTarget)
@@ -116,7 +128,7 @@ export function SignatureMaker() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <ScreenHeader title="Signature Maker" subtitle={`${width}×${height} px · ≤ ${MAX_KB} KB`} />
+      <ScreenHeader title={prefill?.label ?? 'Signature Maker'} subtitle={prefill?.context ? `${prefill.context} · ${width}×${height} px · ≤ ${maxKb} KB` : `${width}×${height} px · ≤ ${maxKb} KB`} />
 
       <main className="flex-1 space-y-5 px-5 py-4">
         {error && (
@@ -133,21 +145,29 @@ export function SignatureMaker() {
             </div>
 
             <div className="space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <label>
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                    Width (px)
+                    Width
                   </span>
                   <div className="mt-1">
-                    <NumberField value={width} min={40} onChange={setWidth} ariaLabel="Width in pixels" />
+                    <NumberField value={width} min={40} onChange={setWidth} ariaLabel="Width in pixels" className="px-2 text-sm" />
                   </div>
                 </label>
                 <label>
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                    Height (px)
+                    Height
                   </span>
                   <div className="mt-1">
-                    <NumberField value={height} min={20} onChange={setHeight} ariaLabel="Height in pixels" />
+                    <NumberField value={height} min={20} onChange={setHeight} ariaLabel="Height in pixels" className="px-2 text-sm" />
+                  </div>
+                </label>
+                <label>
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
+                    Max KB
+                  </span>
+                  <div className="mt-1">
+                    <NumberField value={maxKb} min={1} onChange={setMaxKb} ariaLabel="Maximum size in KB" className="px-2 text-sm" />
                   </div>
                 </label>
               </div>
@@ -202,7 +222,7 @@ export function SignatureMaker() {
               previewWidth={width}
               checks={[
                 { label: `${width}×${height} px`, ok: true },
-                { label: `≤ ${MAX_KB} KB`, ok: metSize },
+                { label: `≤ ${maxKb} KB`, ok: metSize },
                 { label: blueInk ? 'Blue ink' : 'Black ink', ok: !blueInk },
               ]}
               warning={
@@ -210,7 +230,7 @@ export function SignatureMaker() {
                   ? 'Ink converted to black and the paper cleaned to white.'
                   : metSize
                     ? undefined
-                    : `Couldn't fit under ${MAX_KB} KB at usable quality.`
+                    : `Couldn't fit under ${maxKb} KB at usable quality.`
               }
               onStartOver={reset}
               startOverLabel="Another signature"

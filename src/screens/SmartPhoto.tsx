@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
 import { Button } from '../components/Button'
@@ -30,11 +31,23 @@ const PRESETS: Preset[] = [
 
 type Step = 'requirement' | 'source' | 'crop' | 'working' | 'result'
 
+/** Set when arriving from a Government Exams document. */
+interface Prefill {
+  requirement?: ImageRequirement
+  label?: string
+  context?: string
+}
+
 export function SmartPhoto() {
-  const [step, setStep] = useState<Step>('requirement')
+  const prefill = (useLocation().state ?? null) as Prefill | null
+  const preset = prefill?.requirement
+
+  // Arriving from an exam means the requirement is already known, so skip
+  // straight to picking the photo.
+  const [step, setStep] = useState<Step>(preset ? 'source' : 'requirement')
   const [presetIndex, setPresetIndex] = useState(0)
-  const [useCustom, setUseCustom] = useState(false)
-  const [custom, setCustom] = useState<ImageRequirement>({ width: 200, height: 230, maxKb: 50 })
+  const [useCustom, setUseCustom] = useState(Boolean(preset))
+  const [custom, setCustom] = useState<ImageRequirement>(preset ?? { width: 200, height: 230, maxKb: 50 })
 
   const [img, setImg] = useState<HTMLImageElement | null>(null)
   const [crop, setCrop] = useState<CropRect | null>(null)
@@ -94,14 +107,20 @@ export function SmartPhoto() {
     setResultBlob(null)
     setResultUrl(null)
     setError(null)
-    setStep('requirement')
+    setStep(preset ? 'source' : 'requirement')
   }
 
   return (
     <div className="flex min-h-screen flex-col">
       <ScreenHeader
-        title="Smart Photo"
-        subtitle={step === 'requirement' ? undefined : `${target.width}×${target.height} px · ≤ ${target.maxKb} KB`}
+        title={prefill?.label ?? 'Smart Photo'}
+        subtitle={
+          prefill?.context
+            ? `${prefill.context} · ${target.width}×${target.height} px · ≤ ${target.maxKb} KB`
+            : step === 'requirement'
+              ? undefined
+              : `${target.width}×${target.height} px · ≤ ${target.maxKb} KB`
+        }
       />
 
       <main className="flex-1 space-y-5 px-5 py-4">

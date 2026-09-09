@@ -167,6 +167,21 @@ input[type="number"] {
   border-color: var(--danger);
 }
 
+.fr-tint {
+  background: var(--tint-bg-light);
+  color: var(--tint-fg-light);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .fr-tint {
+    background: var(--tint-bg-dark);
+    color: var(--tint-fg-dark);
+  }
+}
+:root[data-theme="dark"] .fr-tint {
+  background: var(--tint-bg-dark);
+  color: var(--tint-fg-dark);
+}
+
 button:focus-visible,
 a:focus-visible,
 [role="button"]:focus-visible {

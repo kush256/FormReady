@@ -9,6 +9,8 @@ const ResizePhoto = lazy(() => import('./screens/ResizePhoto').then((m) => ({ de
 const CompressPdf = lazy(() => import('./screens/CompressPdf').then((m) => ({ default: m.CompressPdf })))
 const MergePdf = lazy(() => import('./screens/MergePdf').then((m) => ({ default: m.MergePdf })))
 const SplitPdf = lazy(() => import('./screens/SplitPdf').then((m) => ({ default: m.SplitPdf })))
+const GovExams = lazy(() => import('./screens/GovExams').then((m) => ({ default: m.GovExams })))
+const ExamDetail = lazy(() => import('./screens/ExamDetail').then((m) => ({ default: m.ExamDetail })))
 
 function ScreenFallback() {
   return (
@@ -32,6 +34,8 @@ function App() {
             <Route path="/compress-pdf" element={<CompressPdf />} />
             <Route path="/merge-pdf" element={<MergePdf />} />
             <Route path="/split-pdf" element={<SplitPdf />} />
+            <Route path="/gov-exams" element={<GovExams />} />
+            <Route path="/gov-exams/:examId" element={<ExamDetail />} />
           </Routes>
         </Suspense>
       </div>

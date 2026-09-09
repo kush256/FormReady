@@ -173,7 +173,31 @@ async function mixedPdf(name) {
   console.log('wrote', name, bytes.byteLength, 'bytes')
 }
 
+/**
+ * A long, text-heavy document — the shape that took 64 minutes to get nowhere.
+ * Re-encoding pages like these makes them larger, so the compressor must work
+ * that out from a sample rather than by rendering all of them.
+ */
+async function longTextPdf(name, pages) {
+  const doc = await PDFDocument.create()
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  for (let i = 0; i < pages; i++) {
+    const p = doc.addPage([595, 842])
+    p.drawText(`Chapter notes — page ${i + 1}`, { x: 50, y: 790, size: 16, font })
+    for (let j = 0; j < 44; j++) {
+      p.drawText(
+        `${j + 1}. Dense line of body text on page ${i + 1} that a reader would want to stay sharp.`,
+        { x: 50, y: 760 - j * 17, size: 9.5, font },
+      )
+    }
+  }
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log('wrote', name, (bytes.byteLength / 1024 / 1024).toFixed(1), 'MB', `(${pages} pages)`)
+}
+
 await mixedPdf('test-doc-mixed.pdf')
+await longTextPdf('test-doc-long-text.pdf', 300)
 await hugePdf('test-doc-huge.pdf', 41)
 
 await browser.close()

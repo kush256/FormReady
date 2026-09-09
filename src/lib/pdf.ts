@@ -115,6 +115,8 @@ export interface CompressPdfResult {
   /** Pages re-encoded as images. Text-only pages are copied instead, staying sharp. */
   rasterisedPages: number
   copiedPages: number
+  /** Re-encoding the pages was measured to be pointless, so it was skipped. */
+  notWorthRasterising?: boolean
 }
 
 export interface CompressProgress {
@@ -165,18 +167,27 @@ const MIN_SCALE = 0.45
 const MAX_SCALE = 1.6
 
 /**
- * pdf-lib parses a whole document into JavaScript objects, which costs several
- * times the file size in memory. On a phone that is what kills a big file, so
- * above this we skip both the lossless pass and page copying and go straight
- * to streaming rasterisation, which holds one page at a time.
+ * pdf-lib parses a whole document into JavaScript objects, costing several
+ * times the file size in memory. Past this we still attempt the cheap lossless
+ * pass but release the parsed document immediately rather than holding it
+ * through rasterisation.
  */
-const PDF_LIB_SAFE_BYTES = 8 * 1024 * 1024
+const PDF_LIB_SAFE_BYTES = 24 * 1024 * 1024
+
+/** Holding a parsed document for page copying is only safe on smaller files. */
+const PDF_LIB_HOLD_BYTES = 8 * 1024 * 1024
 
 /** Reading the operator list of every page is only worth it on shorter documents. */
 const PLAN_MAX_PAGES = 60
 
 /** Caps one rendered page, so an oversized page can't allocate a huge canvas. */
-const MAX_PAGE_PIXELS = 2_400_000
+const MAX_PAGE_PIXELS = 1_600_000
+
+/** Pages measured before deciding whether rasterising the rest is worth it. */
+const SAMPLE_PAGES = 3
+
+/** Rough JPEG cost per pixel, used only to pick a starting resolution. */
+const BYTES_PER_PIXEL_GUESS = 0.2
 
 type PagePlan = { index: number; rasterise: boolean }
 
@@ -211,17 +222,19 @@ export async function compressPdf(
   // seconds of silence the user would otherwise read as a freeze.
   onProgress?.({ phase: 'analysing', fraction: 0.02, page: 0, pageCount: 0, bytesSoFar: originalBytes })
 
-  const modest = originalBytes <= PDF_LIB_SAFE_BYTES
+  const canParse = originalBytes <= PDF_LIB_SAFE_BYTES
+  const canHold = originalBytes <= PDF_LIB_HOLD_BYTES
 
   // Rasterising can make a text-heavy document bigger than it started. Keep
   // the smallest thing we have seen so we never hand back a worse file.
   let fallback = bytes
   let fallbackMethod: CompressMethod = 'already-small'
 
-  // Only large enough to be worth parsing twice on a small file. On a big one
-  // this is exactly the allocation that crashes the WebView.
+  // The lossless pass costs seconds even on a big file and often achieves a
+  // modest reduction on its own, which is exactly what a large document
+  // usually needs. Worth trying before considering hundreds of renders.
   let srcDoc: PDFDocument | null = null
-  if (modest) {
+  if (canParse) {
     onProgress?.({ phase: 'lossless', fraction: 0.04, page: 0, pageCount: 0, bytesSoFar: originalBytes })
     try {
       srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true })
@@ -242,6 +255,9 @@ export async function compressPdf(
           copiedPages: srcDoc.getPageCount(),
         }
       }
+      // On a large file, release the parsed document now. Holding it through
+      // rasterisation is what runs the WebView out of memory.
+      if (!canHold) srcDoc = null
     } catch (e) {
       if (isCancellation(e)) throw e
       srcDoc = null
@@ -252,7 +268,7 @@ export async function compressPdf(
   // need the original around; on a large file that copy is memory we can't spare.
   let renderDoc: pdfjsLib.PDFDocumentProxy
   try {
-    renderDoc = await loadPdfJsDoc(modest ? bytes.slice() : bytes)
+    renderDoc = await loadPdfJsDoc(srcDoc ? bytes.slice() : bytes)
   } catch (e) {
     if (isCancellation(e)) throw e
     throw new PdfTooLargeError()
@@ -272,6 +288,25 @@ export async function compressPdf(
   const settings = await calibrate(renderDoc, samplePage, budgetPerPage, signal)
   throwIfAborted(signal)
 
+  // Measure a handful of pages before committing to hundreds of them. A long
+  // document that is mostly text gains nothing from rasterisation and can even
+  // grow, and finding that out after forty minutes of work is unforgivable.
+  const projection = await project(renderDoc, plan, settings, signal)
+  throwIfAborted(signal)
+
+  if (projection.bytes >= fallback.byteLength) {
+    return {
+      bytes: fallback,
+      metTarget: fallback.byteLength <= maxBytes,
+      originalBytes,
+      finalBytes: fallback.byteLength,
+      method: fallbackMethod,
+      rasterisedPages: 0,
+      copiedPages: pageCount,
+      notWorthRasterising: true,
+    }
+  }
+
   try {
     let best = await assemble(renderDoc, srcDoc, plan, settings, {
       onProgress,
@@ -279,6 +314,7 @@ export async function compressPdf(
       pageCount,
       baseFraction: 0.15,
       span: 0.45,
+      priorMsPerPage: projection.msPerPage,
     })
     throwIfAborted(signal)
 
@@ -294,6 +330,7 @@ export async function compressPdf(
         pageCount,
         baseFraction: 0.6,
         span: 0.38,
+        priorMsPerPage: projection.msPerPage,
       })
       if (retry.byteLength < best.byteLength) best = retry
     }
@@ -408,7 +445,12 @@ async function calibrate(
   signal?: AbortSignal,
 ): Promise<{ scale: number; quality: number }> {
   const page = await doc.getPage(pageNumber)
-  const scale = cappedScale(page, 1.4)
+  // Start from the resolution the per-page budget can actually afford, rather
+  // than a fixed high scale that a long document can never sustain.
+  const viewport = page.getViewport({ scale: 1 })
+  const affordablePixels = Math.min(MAX_PAGE_PIXELS, budgetPerPage / BYTES_PER_PIXEL_GUESS)
+  const wanted = clamp(Math.sqrt(affordablePixels / (viewport.width * viewport.height)), MIN_SCALE, MAX_SCALE)
+  const scale = cappedScale(page, wanted)
   const canvas = await renderPageToCanvas(page, scale)
   page.cleanup()
   throwIfAborted(signal)
@@ -441,6 +483,7 @@ async function assemble(
     pageCount: number
     baseFraction: number
     span: number
+    priorMsPerPage?: number
   },
 ): Promise<Uint8Array> {
   const out = await PDFDocument.create()
@@ -473,8 +516,10 @@ async function assemble(
 
     const done = i + 1
     const elapsed = (performance.now() - startedAt) / 1000
-    // Only estimate once there is a real rate to extrapolate from.
-    const etaSeconds = done >= 2 ? Math.round((elapsed / done) * (plan.length - done)) : undefined
+    // Use the measured rate once there is one, otherwise the rate from the
+    // sampling pass, so the estimate is honest from the very first page.
+    const msPerPage = done >= 2 ? (elapsed * 1000) / done : ctx.priorMsPerPage
+    const etaSeconds = msPerPage ? Math.round((msPerPage * (plan.length - done)) / 1000) : undefined
 
     ctx.onProgress?.({
       phase: 'compressing',
@@ -488,6 +533,42 @@ async function assemble(
   }
 
   return out.save({ useObjectStreams: true })
+}
+
+/**
+ * Renders a few pages spread through the document to find out what
+ * rasterisation would actually cost, in both bytes and time, before doing it
+ * for real.
+ */
+async function project(
+  doc: pdfjsLib.PDFDocumentProxy,
+  plan: PagePlan[],
+  settings: { scale: number; quality: number },
+  signal?: AbortSignal,
+): Promise<{ bytes: number; msPerPage: number }> {
+  const rasterPages = plan.filter((p) => p.rasterise)
+  const step = Math.max(1, Math.floor(rasterPages.length / SAMPLE_PAGES))
+  const samples = rasterPages.filter((_, i) => i % step === 0).slice(0, SAMPLE_PAGES)
+
+  let totalBytes = 0
+  const startedAt = performance.now()
+  for (const entry of samples) {
+    throwIfAborted(signal)
+    const page = await doc.getPage(entry.index)
+    const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale))
+    const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
+    releaseCanvas(canvas)
+    page.cleanup()
+    totalBytes += jpeg.size
+    await yieldToUi()
+  }
+  const elapsed = performance.now() - startedAt
+
+  const perPage = totalBytes / Math.max(1, samples.length)
+  // Copied pages keep their original weight, which we cannot see from here, so
+  // this projection deliberately covers the rasterised pages plus overhead.
+  const projectedBytes = Math.round(perPage * rasterPages.length * 1.04)
+  return { bytes: projectedBytes, msPerPage: elapsed / Math.max(1, samples.length) }
 }
 
 /** Frees the backing bitmap immediately rather than waiting for GC. */

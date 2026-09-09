@@ -244,6 +244,67 @@ async function main() {
   const hugeSizes = [...hugeText.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
   check('Large file actually shrank', hugeSizes.length >= 2 && hugeSizes[1] < hugeSizes[0], JSON.stringify(hugeSizes))
 
+  // ---- Long text document: must bail out fast, not grind through 300 pages ----
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-long-text.pdf`])
+  await page.waitForSelector('text=Maximum size')
+  await page.getByRole('button', { name: 'KB', exact: true }).click()
+  const longField = page.locator('input[inputmode="numeric"]').first()
+  await longField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('120')
+  await page.locator('body').click()
+  await page.waitForTimeout(200)
+  const tLong = Date.now()
+  await page.locator('button:has-text("Compress PDF")').click()
+  await page.waitForSelector('button:has-text("Save to device")', { timeout: 120000 })
+  const longMs = Date.now() - tLong
+  const longText = await page.locator('main').innerText()
+  console.log(`      300-page text doc resolved in ${(longMs / 1000).toFixed(1)}s`)
+  check('Long text doc resolves quickly, not by rendering every page', longMs < 25000, `${(longMs / 1000).toFixed(1)}s`)
+  check('Explains that re-encoding would not help', longText.includes("can't get smaller") || longText.includes('already packed efficiently'))
+
+  // ---- Government Exams: pick an exam, open a document pre-filled ----
+  await openTool(page, 'gov-exams')
+  await page.waitForSelector('text=Pick your exam')
+  check('Exam list shows the targeted exams', (await page.locator('text=SSC CGL').count()) > 0 && (await page.locator('text=NEET UG').count()) > 0)
+  await page.locator('input[aria-label="Search exams"]').fill('neet')
+  await page.waitForTimeout(200)
+  check('Search narrows the list', (await page.locator('text=SSC CGL').count()) === 0 && (await page.locator('text=NEET UG').count()) > 0)
+  await page.locator('text=NEET UG').first().click()
+  await page.waitForSelector('text=documents to prepare')
+  const examText = await page.locator('main').innerText()
+  check('Exam lists all its documents', examText.includes('Passport photograph') && examText.includes('Postcard photograph') && examText.includes('Left thumb impression'))
+  check('Each document shows its spec', examText.includes('276×354 px') && examText.includes('10–200 KB'))
+
+  // a signature document routes to the signature tool, pre-filled
+  await page.locator('text=Signature').first().click()
+  await page.waitForSelector('text=Add your signature')
+  const sigHeader = await page.locator('header').innerText()
+  check('Signature opens pre-filled from the exam', sigHeader.includes('NEET UG') && sigHeader.includes('280×120'))
+
+  // a photo document routes to Smart Photo, skipping the requirement step
+  await openTool(page, 'gov-exams/ssc-cgl')
+  await page.waitForSelector('text=documents to prepare')
+  await page.locator('text=Photograph').first().click()
+  await page.waitForSelector('text=Add your photo')
+  const photoHeader = await page.locator('header').innerText()
+  check('Photo opens pre-filled and skips the size step', photoHeader.includes('SSC CGL') && photoHeader.includes('200×230'))
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
+  await page.waitForSelector('text=Frame your photo')
+  await page.locator('button:has-text("Prepare photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  check('Exam-driven photo meets the exam spec', (await page.locator('main').innerText()).includes('Meets every requirement'))
+
+  // ---- Privacy wording is present and explicit ----
+  await page.goto(BASE)
+  await page.waitForSelector('text=FormReady')
+  const homeText = await page.locator('main').innerText()
+  check('Home states files never leave the phone', homeText.includes('never leave this phone'))
+  check('Home explains offline and no upload', homeText.includes('offline') && homeText.includes('Nothing is uploaded'))
+
   // ---- Dark mode renders ----
   const dark = await browser.newPage({ viewport: { width: 420, height: 900 }, colorScheme: 'dark' })
   await dark.goto(BASE)

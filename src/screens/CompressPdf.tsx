@@ -226,7 +226,13 @@ export function CompressPdf() {
 
         {step === 'result' && result && resultBlob && (
           <ResultView
-            heading={result.metTarget ? 'Your PDF is ready' : 'Made as small as possible'}
+            heading={
+              result.metTarget
+                ? 'Your PDF is ready'
+                : result.notWorthRasterising
+                  ? "This PDF can't get smaller"
+                  : 'Made as small as possible'
+            }
             blob={resultBlob}
             filename={`compressed-${file?.name ?? 'document.pdf'}`}
             originalBytes={result.originalBytes}
@@ -243,7 +249,9 @@ export function CompressPdf() {
             warning={
               result.metTarget
                 ? undefined
-                : `This PDF couldn't go under ${formatBytes(targetBytes)} without becoming unreadable. Try a higher limit, or split it into fewer pages first.`
+                : result.notWorthRasterising
+                  ? `This PDF is mostly text and is already packed efficiently. Re-encoding its ${result.copiedPages} pages would have made it larger, not smaller, so it was left as it is. To get under ${formatBytes(targetBytes)}, split it into fewer pages instead.`
+                  : `This PDF couldn't go under ${formatBytes(targetBytes)} without becoming unreadable. Try a higher limit, or split it into fewer pages first.`
             }
             onStartOver={reset}
             startOverLabel="Another PDF"
