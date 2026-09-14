@@ -136,6 +136,52 @@ async function imagePdf(name) {
   console.log('wrote', name, bytes.byteLength, 'bytes')
 }
 
+/**
+ * A document whose first page is nothing like the rest: a flat cover, then
+ * pages of dense photographic noise.
+ *
+ * Calibration reads one page to choose a quality, so a cheap cover makes it
+ * far too optimistic about the rest. This is the shape that overshot the target
+ * on the first pass and sent the compressor back to render every page a second
+ * time — the bug where progress appeared to restart at zero.
+ */
+async function unevenPdf(name, pages) {
+  const doc = await PDFDocument.create()
+  const cover = fs.readFileSync(path.join(OUT, 'fixture-flat.jpg'))
+  const dense = fs.readFileSync(path.join(OUT, 'fixture-noise.jpg'))
+
+  const coverImage = await doc.embedJpg(cover)
+  const first = doc.addPage([595, 842])
+  first.drawImage(coverImage, { x: 0, y: 0, width: 595, height: 842 })
+
+  const denseImage = await doc.embedJpg(dense)
+  for (let i = 1; i < pages; i++) {
+    const p = doc.addPage([595, 842])
+    p.drawImage(denseImage, { x: 0, y: 0, width: 595, height: 842 })
+  }
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log('wrote', name, (bytes.byteLength / 1024 / 1024).toFixed(1), 'MB', `(${pages} pages)`)
+}
+
+// A flat cover encodes to almost nothing; pure noise is the most expensive
+// thing a JPEG encoder can be handed.
+await draw('fixture-flat.jpg', 1240, 1754, `
+  ctx.fillStyle = '#e8eef7'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#1b2330'; ctx.font = 'bold 90px sans-serif';
+  ctx.fillText('COVER', 80, 300);
+`)
+await draw('fixture-noise.jpg', 1240, 1754, `
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < img.data.length; i += 4) {
+    img.data[i] = Math.random() * 255;
+    img.data[i + 1] = Math.random() * 255;
+    img.data[i + 2] = Math.random() * 255;
+    img.data[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+`)
+
 await textPdf('test-doc-a.pdf', 3, 'Document A')
 await textPdf('test-doc-b.pdf', 2, 'Document B')
 await textPdf('test-doc-big.pdf', 6, 'Big document')
@@ -238,6 +284,7 @@ async function longTextPdf(name, pages) {
 
 await mixedPdf('test-doc-mixed.pdf')
 await longTextPdf('test-doc-long-text.pdf', 300)
+await unevenPdf('test-doc-uneven.pdf', 24)
 await hugePdf('test-doc-huge.pdf', 41)
 
 await browser.close()

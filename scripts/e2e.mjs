@@ -318,6 +318,60 @@ async function main() {
   const hugeSizes = [...hugeText.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
   check('Large file actually shrank', hugeSizes.length >= 2 && hugeSizes[1] < hugeSizes[0], JSON.stringify(hugeSizes))
 
+  // ---- Tight target: the reported "restarted at zero" case ----
+  // A limit the first pass cannot reach on its own used to trigger a second
+  // render of every page, which reset the page counter to 1 and, on a phone,
+  // ran out of memory and lost the first pass entirely.
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-uneven.pdf`])
+  await page.waitForSelector('text=Maximum size')
+  await page.getByRole('button', { name: 'KB', exact: true }).click()
+  const tightField = page.locator('input[inputmode="numeric"]').first()
+  await tightField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('400')
+  await page.locator('body').click()
+  await page.waitForTimeout(200)
+
+  const tTight = Date.now()
+  await page.locator('button:has-text("Compress PDF")').click()
+
+  // Watch the progress panel for the whole run. Within one stage the page
+  // counter must only ever climb: a drop means that stage started the document
+  // over, which is the whole document being rendered a second time.
+  const seen = []
+  let regressions = 0
+  let lastLabel = ''
+  let lastPage = 0
+  const watch = setInterval(async () => {
+    try {
+      const panel = await page.locator('main').innerText()
+      const m = panel.match(/Page (\d+) of (\d+)/)
+      if (!m) return
+      // The label is uppercased by CSS, and innerText returns it as rendered.
+      const label = (panel.match(/(TRYING LOSSLESS FIRST|CHECKING PAGES|COMPRESSING|FINE-TUNING[^\n]*)/i) ?? [''])[0]
+      const current = Number(m[1])
+      if (label === lastLabel && current < lastPage) regressions++
+      lastLabel = label
+      lastPage = current
+      seen.push(`${label}:${current}`)
+    } catch {
+      // The panel is gone; the run finished between polls.
+    }
+  }, 100)
+
+  await page.waitForSelector('button:has-text("Save to device")', { timeout: 180000 })
+  clearInterval(watch)
+  const tightMs = Date.now() - tTight
+  const tightText = await page.locator('main').innerText()
+  console.log(`      uneven 2.1 MB / 24 pages -> 400 KB target took ${(tightMs / 1000).toFixed(1)}s`)
+  check('Tight target never renders the document twice', regressions === 0, `${regressions} restarts over ${seen.length} samples`)
+  check('Tight target still produces a file', tightText.includes('ready') || tightText.includes('smaller'))
+  const tightSizes = [...tightText.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
+  check('Tight target lands under the limit', tightSizes.length >= 2 && tightSizes[1] <= 400, JSON.stringify(tightSizes))
+
   // ---- Long text document: must bail out fast, not grind through 300 pages ----
   await openTool(page, 'compress-pdf')
   await page.waitForSelector('text=Reduce PDF size')

@@ -248,7 +248,7 @@ export interface CompressPdfResult {
 }
 
 export interface CompressProgress {
-  phase: 'lossless' | 'analysing' | 'compressing'
+  phase: 'lossless' | 'analysing' | 'compressing' | 'refining'
   fraction: number
   page: number
   pageCount: number
@@ -326,6 +326,33 @@ const MAX_PAGE_PIXELS = 1_600_000
 
 /** Pages measured before deciding whether rasterising the rest is worth it. */
 const SAMPLE_PAGES = 3
+
+/**
+ * How many times the sampled measurement is fed back into the settings before
+ * committing to the full pass.
+ *
+ * Each round costs three page renders. Getting the first pass right is worth
+ * far more than that: the alternative is discovering the overshoot only after
+ * every page has been rendered, and rendering them all over again.
+ */
+const PROJECTION_ROUNDS = 2
+
+/**
+ * How far over the limit the first pass has to land before a second one is
+ * worth rendering the whole document again. A result a whisker over is not
+ * worth doubling the wait for.
+ */
+const REFINE_THRESHOLD = 1.02
+
+/** Progress is divided up front so the bar never jumps backwards. */
+const PLAN_BASE = 0.06
+const PLAN_SPAN = 0.08
+const SAMPLE_BASE = 0.14
+const SAMPLE_SPAN = 0.06
+const ASSEMBLE_BASE = 0.2
+const ASSEMBLE_SPAN = 0.6
+const REFINE_BASE = 0.8
+const REFINE_SPAN = 0.19
 
 /** Rough JPEG cost per pixel, used only to pick a starting resolution. */
 const BYTES_PER_PIXEL_GUESS = 0.2
@@ -419,7 +446,7 @@ export async function compressPdf(
   }
   const pageCount = renderDoc.numPages
 
-  onProgress?.({ phase: 'analysing', fraction: 0.06, page: 0, pageCount, bytesSoFar: originalBytes })
+  onProgress?.({ phase: 'analysing', fraction: PLAN_BASE, page: 0, pageCount, bytesSoFar: originalBytes })
   const plan = await buildPagePlan(renderDoc, pageCount, Boolean(srcDoc), {
     onProgress,
     signal,
@@ -429,14 +456,44 @@ export async function compressPdf(
 
   const budgetPerPage = Math.max(2048, (maxBytes * STRUCTURE_HEADROOM) / Math.max(1, rasterCount))
   const samplePage = plan.find((p) => p.rasterise)!.index
-  const settings = await calibrate(renderDoc, samplePage, budgetPerPage, signal)
+  let settings = await calibrate(renderDoc, samplePage, budgetPerPage, signal)
   throwIfAborted(signal)
 
   // Measure a handful of pages before committing to hundreds of them. A long
   // document that is mostly text gains nothing from rasterisation and can even
   // grow, and finding that out after forty minutes of work is unforgivable.
-  const projection = await project(renderDoc, plan, settings, signal)
+  const sampleSpan = SAMPLE_SPAN / (PROJECTION_ROUNDS + 1)
+  let projection = await project(renderDoc, plan, settings, {
+    signal,
+    onProgress,
+    pageCount,
+    bytesSoFar: originalBytes,
+    baseFraction: SAMPLE_BASE,
+    span: sampleSpan,
+  })
   throwIfAborted(signal)
+
+  // Correct the settings against what the samples actually weighed, before
+  // rendering anything for real. Calibration works from one page and a guess at
+  // bytes per pixel; the samples are measurement. Skipping this step is what
+  // made the first pass overshoot and the whole document get rendered twice.
+  const projectionTarget = maxBytes * STRUCTURE_HEADROOM
+  for (let round = 1; round <= PROJECTION_ROUNDS && projection.bytes > projectionTarget; round++) {
+    const overshoot = projection.bytes / projectionTarget
+    const next = shrink(settings, overshoot)
+    // Both levers are already at their floor: no round will help.
+    if (next.scale === settings.scale && next.quality === settings.quality) break
+    settings = next
+    projection = await project(renderDoc, plan, settings, {
+      signal,
+      onProgress,
+      pageCount,
+      bytesSoFar: originalBytes,
+      baseFraction: SAMPLE_BASE + sampleSpan * round,
+      span: sampleSpan,
+    })
+    throwIfAborted(signal)
+  }
 
   if (projection.bytes >= fallback.byteLength) {
     return {
@@ -456,27 +513,37 @@ export async function compressPdf(
       onProgress,
       signal,
       pageCount,
-      baseFraction: 0.15,
-      span: 0.45,
+      phase: 'compressing',
+      baseFraction: ASSEMBLE_BASE,
+      span: ASSEMBLE_SPAN,
       priorMsPerPage: projection.msPerPage,
     })
     throwIfAborted(signal)
 
-    if (best.byteLength > maxBytes) {
-      const overshoot = best.byteLength / maxBytes
-      const corrected = {
-        scale: clamp(settings.scale / Math.sqrt(overshoot), MIN_SCALE, MAX_SCALE),
-        quality: clamp(settings.quality / overshoot, MIN_QUALITY, MAX_QUALITY),
+    // A second pass means rendering every page again, so it has to earn its
+    // place: only when the miss is big enough to matter and the settings still
+    // have somewhere to go. And if it fails or is cancelled, the first pass is
+    // still a real result — losing it to an error would be absurd.
+    const overshoot = best.byteLength / maxBytes
+    if (overshoot > REFINE_THRESHOLD) {
+      const corrected = shrink(settings, overshoot)
+      if (corrected.scale !== settings.scale || corrected.quality !== settings.quality) {
+        try {
+          const retry = await assemble(renderDoc, srcDoc, plan, corrected, {
+            onProgress,
+            signal,
+            pageCount,
+            phase: 'refining',
+            baseFraction: REFINE_BASE,
+            span: REFINE_SPAN,
+            priorMsPerPage: projection.msPerPage,
+          })
+          if (retry.byteLength < best.byteLength) best = retry
+        } catch (e) {
+          if (isCancellation(e)) throw e
+          // Keep the first pass rather than failing the whole job.
+        }
       }
-      const retry = await assemble(renderDoc, srcDoc, plan, corrected, {
-        onProgress,
-        signal,
-        pageCount,
-        baseFraction: 0.6,
-        span: 0.38,
-        priorMsPerPage: projection.msPerPage,
-      })
-      if (retry.byteLength < best.byteLength) best = retry
     }
 
     // Rasterising a mostly-textual document can inflate it. If that happened,
@@ -512,6 +579,25 @@ export async function compressPdf(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
+}
+
+/**
+ * Backs both levers off by the amount we are over budget.
+ *
+ * JPEG size tracks pixel count, which scales with the square of the render
+ * scale, so the overshoot is split between resolution and quality rather than
+ * spent entirely on either. Taking it all out of quality alone smears the text
+ * on a scan; taking it all out of scale alone blurs it.
+ */
+function shrink(
+  settings: { scale: number; quality: number },
+  overshoot: number,
+): { scale: number; quality: number } {
+  const factor = Math.sqrt(overshoot)
+  return {
+    scale: clamp(settings.scale / Math.sqrt(factor), MIN_SCALE, MAX_SCALE),
+    quality: clamp(settings.quality / factor, MIN_QUALITY, MAX_QUALITY),
+  }
 }
 
 /**
@@ -557,7 +643,7 @@ async function buildPagePlan(
     plan.push({ index: i, rasterise: hasImage })
     ctx.onProgress?.({
       phase: 'analysing',
-      fraction: 0.06 + 0.09 * (i / pageCount),
+      fraction: PLAN_BASE + PLAN_SPAN * (i / pageCount),
       page: i,
       pageCount,
       bytesSoFar: ctx.originalBytes,
@@ -625,6 +711,7 @@ async function assemble(
     onProgress?: (p: CompressProgress) => void
     signal?: AbortSignal
     pageCount: number
+    phase: 'compressing' | 'refining'
     baseFraction: number
     span: number
     priorMsPerPage?: number
@@ -667,7 +754,7 @@ async function assemble(
     const etaSeconds = msPerPage ? Math.round((msPerPage * (plan.length - done)) / 1000) : undefined
 
     ctx.onProgress?.({
-      phase: 'compressing',
+      phase: ctx.phase,
       fraction: ctx.baseFraction + ctx.span * (done / plan.length),
       page: done,
       pageCount: ctx.pageCount,
@@ -690,7 +777,14 @@ async function project(
   doc: pdfjsLib.PDFDocumentProxy,
   plan: PagePlan[],
   settings: { scale: number; quality: number },
-  signal?: AbortSignal,
+  ctx: {
+    signal?: AbortSignal
+    onProgress?: (p: CompressProgress) => void
+    pageCount: number
+    bytesSoFar: number
+    baseFraction: number
+    span: number
+  },
 ): Promise<{ bytes: number; msPerPage: number }> {
   const rasterPages = plan.filter((p) => p.rasterise)
   const step = Math.max(1, Math.floor(rasterPages.length / SAMPLE_PAGES))
@@ -699,13 +793,20 @@ async function project(
   let totalBytes = 0
   const startedAt = performance.now()
   const scratch = document.createElement('canvas')
-  for (const entry of samples) {
-    throwIfAborted(signal)
+  for (const [i, entry] of samples.entries()) {
+    throwIfAborted(ctx.signal)
     const page = await doc.getPage(entry.index)
     const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale), scratch)
     const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
     page.cleanup()
     totalBytes += jpeg.size
+    ctx.onProgress?.({
+      phase: 'analysing',
+      fraction: ctx.baseFraction + ctx.span * ((i + 1) / samples.length),
+      page: 0,
+      pageCount: ctx.pageCount,
+      bytesSoFar: ctx.bytesSoFar,
+    })
     await yieldToUi()
   }
   const elapsed = performance.now() - startedAt

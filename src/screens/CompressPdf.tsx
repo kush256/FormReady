@@ -26,6 +26,7 @@ const PHASE_LABEL: Record<CompressProgress['phase'], string> = {
   lossless: 'Trying lossless first',
   analysing: 'Checking pages',
   compressing: 'Compressing',
+  refining: 'Fine-tuning to hit your limit',
 }
 
 const MIN_TARGET_BYTES = 5 * 1024
