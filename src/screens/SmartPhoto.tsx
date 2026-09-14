@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
@@ -10,7 +10,9 @@ import { ResultView } from '../components/ResultView'
 import { SpecChip } from '../components/SpecChip'
 import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
+import { SizeField } from '../components/SizeField'
 import { PhotoIllustration } from '../components/Illustrations'
+import { ChevronRightIcon } from '../components/Icons'
 import { captureFromCamera, pickImages } from '../lib/picker'
 import {
   loadCappedImage,
@@ -27,6 +29,13 @@ import {
   type ImageRequirement,
 } from '../lib/requirements'
 import { formatBytes, kbToBytes } from '../lib/format'
+import {
+  assessPhoto,
+  readPhotoFacts,
+  renderSized,
+  type FitAssessment,
+  type PhotoFacts,
+} from '../lib/fit'
 
 interface Preset extends ImageRequirement {
   label: string
@@ -44,7 +53,27 @@ const PRESETS: Preset[] = [
   { label: 'Admit card photo', note: 'Smaller exam portals', width: 150, height: 200, maxKb: 30 },
 ]
 
-type Step = 'requirement' | 'source' | 'crop' | 'working' | 'result'
+type Step =
+  | 'requirement'
+  | 'source'
+  | 'crop'
+  | 'working'
+  | 'result'
+  // The size-first arm. It takes the photo before asking anything, because
+  // someone who does not know their dimensions cannot answer first.
+  | 'sizeSource'
+  | 'sizeTarget'
+  | 'sizeChecking'
+  | 'sizeVerdict'
+
+/**
+ * Which of the three ways in the user took.
+ *
+ * `preset` and `custom` both mean "the form told me exact numbers" and keep the
+ * original order: requirement, then photo. `sizeFirst` means "I only know the
+ * KB limit" and runs the other way round.
+ */
+type Mode = 'preset' | 'custom' | 'sizeFirst'
 
 /** Set when arriving from a Government Exams document. */
 interface Prefill {
@@ -66,8 +95,23 @@ export function SmartPhoto() {
   // straight to picking the photo.
   const [step, setStep] = useState<Step>(preset ? 'source' : 'requirement')
   const [presetIndex, setPresetIndex] = useState(0)
-  const [useCustom, setUseCustom] = useState(Boolean(preset))
+  const [mode, setMode] = useState<Mode>(preset ? 'custom' : 'preset')
   const [custom, setCustom] = useState<ImageRequirement>(preset ?? { width: 200, height: 230, maxKb: 50 })
+
+  // Size-first state. This arm keeps the File rather than a decoded image:
+  // nothing is decoded at full size, and every render goes straight from the
+  // file to the size actually wanted.
+  const [file, setFile] = useState<File | null>(null)
+  const [facts, setFacts] = useState<PhotoFacts | null>(null)
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null)
+  const [budgetBytes, setBudgetBytes] = useState(100 * 1024)
+  const [useDims, setUseDims] = useState(false)
+  const [dims, setDims] = useState({ width: 0, height: 0 })
+  const [assessment, setAssessment] = useState<FitAssessment | null>(null)
+  const [checkFraction, setCheckFraction] = useState(0)
+  const [outDims, setOutDims] = useState({ width: 0, height: 0 })
+  /** Drops the result of a check the user has already navigated away from. */
+  const checkRun = useRef(0)
 
   const [img, setImg] = useState<HTMLImageElement | null>(null)
   const [crop, setCrop] = useState<CropRect | null>(null)
@@ -81,11 +125,11 @@ export function SmartPhoto() {
   /** The quality the encoder settled on, which says whether headroom is spendable. */
   const [resultQuality, setResultQuality] = useState(1)
 
-  const target: ImageRequirement = useCustom ? custom : PRESETS[presetIndex]
+  const target: ImageRequirement = mode === 'custom' ? custom : PRESETS[presetIndex]
   // A file under a stated floor is rejected as surely as one over the ceiling.
   const metMinimum = !target.minKb || !resultBlob || resultBlob.size >= kbToBytes(target.minKb)
   const aspect = useMemo(() => target.width / target.height, [target.width, target.height])
-  const issue = useMemo(() => (useCustom ? validateRequirement(custom) : null), [useCustom, custom])
+  const issue = useMemo(() => (mode === 'custom' ? validateRequirement(custom) : null), [mode, custom])
 
   async function handlePicked(files: File[]) {
     const file = files[0]
@@ -111,6 +155,97 @@ export function SmartPhoto() {
   async function onGallery() {
     const files = await pickImages(false)
     if (files.length) handlePicked(files)
+  }
+
+  /** Size-first: keep the file, read what it is, and ask for a size. */
+  async function handleSizePicked(files: File[]) {
+    const picked = files[0]
+    if (!picked) return
+    try {
+      setError(null)
+      const found = await readPhotoFacts(picked)
+      setFile(picked)
+      setFacts(found)
+      setSourceBytes(picked.size)
+      setDims({ width: found.width, height: found.height })
+      setSourceUrl((previous) => {
+        if (previous) URL.revokeObjectURL(previous)
+        return URL.createObjectURL(picked)
+      })
+      setStep('sizeTarget')
+    } catch {
+      setError('Could not open that photo. Try a different file.')
+    }
+  }
+
+  async function onSizeCamera() {
+    const captured = await captureFromCamera()
+    if (captured) handleSizePicked([captured])
+  }
+  async function onSizeGallery() {
+    const picked = await pickImages(false)
+    if (picked.length) handleSizePicked(picked)
+  }
+
+  /**
+   * Measures the photo against the size asked for.
+   *
+   * Takes as long as it takes — three or four test encodes, typically under a
+   * fifth of a second. Padding that out to feel considered would only be
+   * pretending.
+   */
+  async function runCheck(nextBudget = budgetBytes, nextDims = dims, nextUseDims = useDims) {
+    if (!file || !facts) return
+    const run = ++checkRun.current
+    setCheckFraction(0)
+    setStep('sizeChecking')
+    try {
+      await nextFrame()
+      const requested = nextUseDims ? { width: nextDims.width, height: nextDims.height } : null
+      const found = await assessPhoto(file, facts, nextBudget, requested, (fraction) => {
+        if (run === checkRun.current) setCheckFraction(fraction)
+      })
+      // The user moved on while this was running; its answer is stale.
+      if (run !== checkRun.current) return
+      setAssessment(found)
+      setStep('sizeVerdict')
+    } catch {
+      if (run !== checkRun.current) return
+      setError('Could not read that photo well enough to check it.')
+      setStep('sizeTarget')
+    }
+  }
+
+  /** Size-first: render at the measured dimensions, then spend any headroom on quality. */
+  async function processSizeFirst() {
+    if (!file || !facts || !assessment) return
+    setStage({ label: 'Resizing your photo', fraction: 0.05 })
+    setStep('working')
+    try {
+      await nextFrame()
+      // The same call the measurement made, so the promise and the product match.
+      const canvas = await renderSized(file, facts.width, facts.height, assessment.width, assessment.height)
+
+      setStage({ label: 'Finding the best quality that fits', fraction: 0.2 })
+      await nextFrame()
+      const result = await compressToTarget(canvas, {
+        maxBytes: budgetBytes,
+        onProgress: (fraction) =>
+          setStage({ label: 'Finding the best quality that fits', fraction: 0.2 + fraction * 0.75 }),
+      })
+      releaseCanvas(canvas)
+
+      setStage({ label: 'Almost there', fraction: 1 })
+      setOutDims({ width: assessment.width, height: assessment.height })
+      setResultBlob(result.blob)
+      setResultUrl(URL.createObjectURL(result.blob))
+      setMetSize(result.metTarget)
+      setResultQuality(result.quality)
+      setStep('result')
+    } catch {
+      setError('Something went wrong while preparing the photo.')
+      setStep('sizeVerdict')
+    }
   }
 
   async function process() {
@@ -153,7 +288,10 @@ export function SmartPhoto() {
     setResultBlob(null)
     setResultUrl(null)
     setError(null)
-    setStep(preset ? 'source' : 'requirement')
+    setAssessment(null)
+    // Another photo, same job: size-first goes back to the picker, not to a
+    // question the user already answered.
+    setStep(preset ? 'source' : mode === 'sizeFirst' ? 'sizeSource' : 'requirement')
   }
 
   return (
@@ -163,9 +301,13 @@ export function SmartPhoto() {
         subtitle={
           prefill?.context
             ? `${prefill.context} · ${describeRequirement(target)}`
-            : step === 'requirement'
-              ? undefined
-              : describeRequirement(target)
+            : mode === 'sizeFirst'
+              ? step === 'result' && resultBlob
+                ? `${outDims.width}×${outDims.height} px · ${formatBytes(resultBlob.size)}`
+                : `≤ ${formatBytes(budgetBytes)}`
+              : step === 'requirement'
+                ? undefined
+                : describeRequirement(target)
         }
       />
 
@@ -183,12 +325,12 @@ export function SmartPhoto() {
 
             <div className="space-y-2">
               {PRESETS.map((preset, i) => {
-                const active = !useCustom && presetIndex === i
+                const active = mode === 'preset' && presetIndex === i
                 return (
                   <button
                     key={preset.label}
                     onClick={() => {
-                      setUseCustom(false)
+                      setMode('preset')
                       setPresetIndex(i)
                     }}
                     className={`flex w-full items-center justify-between gap-3 rounded-2xl border p-4 text-left transition-colors ${
@@ -208,10 +350,30 @@ export function SmartPhoto() {
                 )
               })}
 
+              {/* Placed before the custom card: someone who does not know
+                  their numbers should meet this before a card demanding three
+                  of them. It has nothing to fill in, so it goes straight on
+                  rather than waiting for Continue. */}
               <button
-                onClick={() => setUseCustom(true)}
+                onClick={() => {
+                  setMode('sizeFirst')
+                  setStep('sizeSource')
+                }}
+                className="flex w-full items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-left transition-colors"
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-[var(--ink)]">Just make it smaller</span>
+                  <span className="block text-xs text-[var(--ink-2)]">
+                    You only know the KB limit — we work out the rest
+                  </span>
+                </span>
+                <ChevronRightIcon width={18} height={18} className="shrink-0 text-[var(--ink-3)]" />
+              </button>
+
+              <button
+                onClick={() => setMode('custom')}
                 className={`w-full rounded-2xl border p-4 text-left transition-colors ${
-                  useCustom
+                  mode === 'custom'
                     ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
                     : 'border-[var(--line)] bg-[var(--surface)]'
                 }`}
@@ -221,7 +383,7 @@ export function SmartPhoto() {
               </button>
             </div>
 
-            {useCustom && (
+            {mode === 'custom' && (
               <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
                 <div className="grid grid-cols-3 gap-3">
                   {(
@@ -329,6 +491,221 @@ export function SmartPhoto() {
           </>
         )}
 
+        {step === 'sizeSource' && (
+          <>
+            <div className="flex flex-col items-center pt-1 text-center">
+              <PhotoIllustration size={190} />
+              <h2 className="mt-1 text-xl font-extrabold tracking-tight text-[var(--ink)]">
+                Start with your photo
+              </h2>
+              <p className="mx-auto mt-1.5 max-w-[32ch] text-sm leading-relaxed text-[var(--ink-2)]">
+                We will read its size and work out what fits. No pixel numbers needed.
+              </p>
+            </div>
+            <SourceButtons onCamera={onSizeCamera} onGallery={onSizeGallery} />
+          </>
+        )}
+
+        {step === 'sizeTarget' && facts && (
+          <>
+            <div>
+              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">Here is your photo</h2>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+              {sourceUrl && (
+                <img
+                  src={sourceUrl}
+                  alt="The photo you chose"
+                  className="mx-auto mb-3 block max-h-44 rounded-lg border border-[var(--line)] bg-white"
+                />
+              )}
+              <div className="flex flex-wrap justify-center gap-1.5">
+                <SpecChip icon={false}>
+                  {facts.width}×{facts.height} px
+                </SpecChip>
+                <SpecChip icon={false}>{formatBytes(facts.bytes)}</SpecChip>
+                <SpecChip icon={false}>{facts.format}</SpecChip>
+              </div>
+            </div>
+
+            <div>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
+                How small does it need to be?
+              </span>
+              <div className="mt-1.5">
+                <SizeField bytes={budgetBytes} onChange={setBudgetBytes} />
+              </div>
+              <p className="mt-1.5 text-xs text-[var(--ink-2)]">
+                The number the form asks for. Anything under it is accepted.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+              <label className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={useDims}
+                  onChange={(e) => setUseDims(e.target.checked)}
+                  className="h-4 w-4 accent-[var(--accent)]"
+                />
+                <span className="text-sm font-semibold text-[var(--ink)]">Set exact pixel dimensions</span>
+              </label>
+              <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-2)]">
+                Only if the form names exact pixels. Otherwise we pick the largest size that fits, which
+                is what keeps a photo looking sharp.
+              </p>
+
+              {useDims && (
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  {(
+                    [
+                      ['Width', 'width'],
+                      ['Height', 'height'],
+                    ] as const
+                  ).map(([label, key]) => (
+                    <label key={key}>
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
+                        {label}
+                      </span>
+                      <div className="mt-1">
+                        <NumberField
+                          value={dims[key]}
+                          min={20}
+                          ariaLabel={label}
+                          onChange={(v) => setDims({ ...dims, [key]: v })}
+                          className="px-2 text-sm"
+                        />
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <Button fullWidth disabled={budgetBytes < 1024} onClick={() => runCheck()}>
+              Check my photo
+            </Button>
+          </>
+        )}
+
+        {step === 'sizeChecking' && (
+          <ProgressPanel
+            label="Checking your photo"
+            fraction={checkFraction}
+            detail="Test-encoding it at a few sizes"
+          />
+        )}
+
+        {step === 'sizeVerdict' && assessment && (
+          <>
+            <div>
+              <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">
+                {assessment.verdict === 'good'
+                  ? 'This will work'
+                  : assessment.verdict === 'roomToGrow'
+                    ? 'Your limit allows a bigger photo'
+                    : `${formatBytes(budgetBytes)} is tight for ${assessment.width}×${assessment.height} px`}
+              </h2>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              <SpecChip icon={false}>
+                {assessment.width}×{assessment.height} px
+              </SpecChip>
+              <SpecChip icon={false}>about {formatBytes(assessment.expectedBytes)}</SpecChip>
+              <SpecChip icon={false}>JPG</SpecChip>
+            </div>
+
+            {assessment.verdict === 'good' && (
+              <div className="rounded-2xl border border-[var(--ok)]/35 bg-[var(--ok-soft)] p-4">
+                <p className="text-sm leading-relaxed text-[var(--ink)]">
+                  {assessment.chosen
+                    ? assessment.largest.atSourceLimit
+                      ? `Your photo will come out at ${assessment.width}×${assessment.height} px and about ${formatBytes(assessment.expectedBytes)}, inside your ${formatBytes(budgetBytes)} limit. That is the photo at its full size — making it larger would only invent detail that is not there.`
+                      : `Your photo will come out at ${assessment.width}×${assessment.height} px and about ${formatBytes(assessment.expectedBytes)}, inside your ${formatBytes(budgetBytes)} limit. That is the largest it can be without the quality dropping.`
+                    : `${assessment.width}×${assessment.height} px fits inside ${formatBytes(budgetBytes)} with room to spare. Nothing needs changing.`}
+                </p>
+              </div>
+            )}
+
+            {assessment.verdict === 'roomToGrow' && (
+              <Notice
+                title="Your limit allows a bigger photo"
+                actions={[
+                  {
+                    label: `Use ${assessment.largest.width}×${assessment.largest.height}`,
+                    onClick: () => {
+                      const next = { width: assessment.largest.width, height: assessment.largest.height }
+                      setDims(next)
+                      runCheck(budgetBytes, next, true)
+                    },
+                  },
+                  {
+                    label: 'Let the app choose',
+                    onClick: () => {
+                      setUseDims(false)
+                      runCheck(budgetBytes, dims, false)
+                    },
+                  },
+                ]}
+              >
+                {`At ${assessment.width}×${assessment.height} px this photo only comes to ${formatBytes(assessment.bestBytes)} — that is all the detail those dimensions can hold, even at the highest quality, so ${formatBytes(budgetBytes - assessment.bestBytes)} of your ${formatBytes(budgetBytes)} limit cannot be used. At ${assessment.largest.width}×${assessment.largest.height} px it would use the limit properly and look noticeably sharper.`}
+              </Notice>
+            )}
+
+            {assessment.verdict === 'tight' && (
+              <Notice
+                title="This size will cost some clarity"
+                actions={[
+                  ...(assessment.clearBytes
+                    ? [
+                        {
+                          label: `Allow ${Math.ceil(assessment.clearBytes / 1024)} KB`,
+                          onClick: () => {
+                            const next = Math.ceil(assessment.clearBytes! / 1024) * 1024
+                            setBudgetBytes(next)
+                            runCheck(next, dims, useDims)
+                          },
+                        },
+                      ]
+                    : []),
+                  ...(assessment.chosen
+                    ? []
+                    : [
+                        {
+                          label: `Use ${assessment.largest.width}×${assessment.largest.height}`,
+                          onClick: () => {
+                            const next = {
+                              width: assessment.largest.width,
+                              height: assessment.largest.height,
+                            }
+                            setDims(next)
+                            runCheck(budgetBytes, next, true)
+                          },
+                        },
+                      ]),
+                ]}
+              >
+                {assessment.clearBytes
+                  ? `Fitting ${assessment.width}×${assessment.height} px into ${formatBytes(budgetBytes)} means dropping the quality far enough to see. Keeping this photo clear at those dimensions needs about ${formatBytes(assessment.clearBytes)}. If ${formatBytes(budgetBytes)} is fixed, the largest size that stays clear inside it is ${assessment.largest.width}×${assessment.largest.height} px.`
+                  : `Even at its smallest sensible size this photo does not fit inside ${formatBytes(budgetBytes)}. It will be made as small as it can go, which may look rough.`}
+              </Notice>
+            )}
+
+            <Button fullWidth onClick={processSizeFirst}>
+              {assessment.verdict === 'good'
+                ? 'Make my photo'
+                : assessment.verdict === 'roomToGrow'
+                  ? `Keep ${assessment.width}×${assessment.height} anyway`
+                  : 'Squeeze it anyway'}
+            </Button>
+            <Button variant="ghost" fullWidth onClick={() => setStep('sizeTarget')}>
+              Change the numbers
+            </Button>
+          </>
+        )}
+
         {step === 'working' && (
           <ProgressPanel label="Preparing your photo" fraction={stage.fraction} detail={stage.label} />
         )}
@@ -337,26 +714,44 @@ export function SmartPhoto() {
           <ResultView
             heading="Your photo is ready"
             blob={resultBlob}
-            filename={`photo-${target.width}x${target.height}.jpg`}
+            filename={
+              mode === 'sizeFirst'
+                ? `photo-${outDims.width}x${outDims.height}.jpg`
+                : `photo-${target.width}x${target.height}.jpg`
+            }
             previewUrl={resultUrl}
-            previewWidth={target.width}
+            previewWidth={mode === 'sizeFirst' ? Math.min(outDims.width, 320) : target.width}
             originalBytes={sourceBytes || undefined}
-            checks={[
-              { label: `${target.width}×${target.height} px`, ok: true },
-              { label: `≤ ${target.maxKb} KB`, ok: metSize },
-              ...(target.minKb
-                ? [{ label: `≥ ${target.minKb} KB`, ok: metMinimum }]
-                : []),
-              { label: 'JPG', ok: true },
-            ]}
+            checks={
+              mode === 'sizeFirst'
+                ? [
+                    { label: `${outDims.width}×${outDims.height} px`, ok: true },
+                    { label: `≤ ${formatBytes(budgetBytes)}`, ok: metSize },
+                    { label: 'JPG', ok: true },
+                  ]
+                : [
+                    { label: `${target.width}×${target.height} px`, ok: true },
+                    { label: `≤ ${target.maxKb} KB`, ok: metSize },
+                    ...(target.minKb ? [{ label: `≥ ${target.minKb} KB`, ok: metMinimum }] : []),
+                    { label: 'JPG', ok: true },
+                  ]
+            }
             warning={
               !metSize
-                ? `This photo couldn't go under ${target.maxKb} KB at usable quality. A plainer background usually compresses further.`
-                : !metMinimum
+                ? mode === 'sizeFirst'
+                  ? `This photo couldn't get under ${formatBytes(budgetBytes)} at usable quality.`
+                  : `This photo couldn't go under ${target.maxKb} KB at usable quality. A plainer background usually compresses further.`
+                : mode !== 'sizeFirst' && !metMinimum
                   ? `This form asks for at least ${target.minKb} KB and your photo came to ${formatBytes(resultBlob.size)}. At ${target.width}×${target.height} px it is already at the highest quality there is, so the file cannot be made larger without more pixels — which the form does not allow. A normal photograph of a person usually clears the minimum; a plain or very dark image often does not. Uploading this may be rejected.`
                   : undefined
             }
-            note={explainMaxQuality({ quality: resultQuality, bytes: resultBlob.size }, target) ?? undefined}
+            note={
+              mode === 'sizeFirst'
+                ? assessment?.largest.atSourceLimit && assessment.chosen
+                  ? `That is your photo at its full size — ${outDims.width}×${outDims.height} px. It came to ${formatBytes(resultBlob.size)} of the ${formatBytes(budgetBytes)} allowed, and enlarging it further would only invent detail that was never in the photo.`
+                  : undefined
+                : (explainMaxQuality({ quality: resultQuality, bytes: resultBlob.size }, target) ?? undefined)
+            }
             onStartOver={reset}
             startOverLabel="Another photo"
           />

@@ -190,6 +190,151 @@ async function main() {
   check('Explains why the allowance is unspendable', /all the detail/i.test(roomy), roomy.slice(0, 90).replace(/\n/g, ' '))
   check('Explaining it does not turn the result amber', roomy.includes('Meets every requirement'))
 
+  // ---- Size-first: one number in, the app works out the rest ----
+  // Reads what the result actually is rather than trusting the summary text.
+  async function readPreparedPhoto(page) {
+    return page.evaluate(async () => {
+      const img = document.querySelector('main img[alt="Prepared result"]')
+      const blob = await (await fetch(img.src)).blob()
+      const bitmap = await createImageBitmap(blob)
+      const out = { bytes: blob.size, width: bitmap.width, height: bitmap.height }
+      bitmap.close()
+      return out
+    })
+  }
+
+  async function openSizeFirst(page, fixture) {
+    await openTool(page, 'smart-photo')
+    await page.waitForSelector('text=What does the form need?')
+    await page.locator('text=Just make it smaller').click()
+    await page.waitForSelector('text=Start with your photo')
+    await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [fixture])
+    await page.waitForSelector('text=Here is your photo')
+  }
+
+  async function setBudgetKb(page, kb) {
+    await page.getByRole('button', { name: 'KB', exact: true }).click()
+    const field = page.locator('input[inputmode="numeric"]').first()
+    await field.click()
+    await page.keyboard.press('Control+a')
+    await page.keyboard.press('Backspace')
+    await page.keyboard.type(String(kb))
+    await page.locator('body').click()
+    await page.waitForTimeout(150)
+  }
+
+  await openSizeFirst(page, `${A}/test-photo-1.jpg`)
+  check('Size-first asks for the photo before any numbers', (await page.locator('text=What does the form need?').count()) === 0)
+  const facts = await page.locator('main').innerText()
+  check('It reports the photo it was given', facts.includes('1600×1200 px'), facts.slice(0, 80).replace(/\n/g, ' '))
+  const realKb = Math.round(fs.statSync(`${A}/test-photo-1.jpg`).size / 1024)
+  const shownKb = [...facts.matchAll(/([\d.]+)\s*KB/g)].map((m) => parseFloat(m[1]))[0]
+  check('The size it reports is the real one', Math.abs(shownKb - realKb) <= 2, `showed ${shownKb} KB, file is ${realKb} KB`)
+
+  await setBudgetKb(page, 100)
+  let sawChecking = false
+  const checkWatch = setInterval(async () => {
+    try {
+      if (/CHECKING YOUR PHOTO/i.test(await page.locator('main').innerText())) sawChecking = true
+    } catch {
+      // Panel gone between polls.
+    }
+  }, 25)
+  const tCheck = Date.now()
+  await page.locator('button:has-text("Check my photo")').click()
+  await page.waitForSelector('text=This will work', { timeout: 20000 })
+  clearInterval(checkWatch)
+  const checkMs = Date.now() - tCheck
+  check('The check is visible while it runs', sawChecking)
+  check('The check is quick enough to need no fake delay', checkMs < 3000, `${checkMs} ms`)
+
+  await page.locator('button:has-text("Make my photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const auto = await readPreparedPhoto(page)
+  console.log(`      auto-sized to ${auto.width}×${auto.height} at ${(auto.bytes / 1024).toFixed(1)} KB of 100 KB`)
+  check('Auto size stays inside the limit', auto.bytes <= 100 * 1024, `${(auto.bytes / 1024).toFixed(1)} KB`)
+  // The complaint in one assertion: 8.9 KB of a 100 KB allowance was 9%.
+  check('Auto size actually spends the allowance', auto.bytes >= 70 * 1024, `${(auto.bytes / 1024).toFixed(1)} KB of 100 KB`)
+  check('Auto size beats a guessed 200×230', auto.width * auto.height > 200 * 230 * 8, `${auto.width}×${auto.height}`)
+  check('Auto size keeps the photo’s shape', Math.abs(auto.width / auto.height / (1600 / 1200) - 1) < 0.02, `${auto.width}×${auto.height}`)
+
+  // ---- Never enlarges ----
+  await openSizeFirst(page, `${A}/test-photo-small.jpg`)
+  await setBudgetKb(page, 500)
+  await page.locator('button:has-text("Check my photo")').click()
+  await page.waitForSelector('text=This will work', { timeout: 20000 })
+  await page.locator('button:has-text("Make my photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const small = await readPreparedPhoto(page)
+  check('A small photo is never enlarged to fill the limit', small.width === 240 && small.height === 320, `${small.width}×${small.height}`)
+  check('Using the whole photo is explained, not silently odd', /full size/i.test(await page.locator('main').innerText()))
+
+  // ---- Dimensions that waste the limit are called out, with real numbers ----
+  await openSizeFirst(page, `${A}/test-photo-plain.jpg`)
+  await setBudgetKb(page, 100)
+  await page.locator('text=Set exact pixel dimensions').click()
+  await page.locator('input[aria-label="Width"]').fill('200')
+  await page.locator('input[aria-label="Height"]').fill('230')
+  await page.locator('button:has-text("Check my photo")').click()
+  await page.waitForSelector('text=Your limit allows a bigger photo', { timeout: 20000 })
+  const growLabel = await page.locator('button:has-text("Use ")').first().innerText()
+  const suggested = growLabel.match(/(\d+)×(\d+)/)
+  check('The suggestion names a bigger size in the shape asked for',
+    Boolean(suggested) && Number(suggested[1]) * Number(suggested[2]) > 200 * 230 * 4 &&
+      Math.abs(Number(suggested[1]) / Number(suggested[2]) / (200 / 230) - 1) < 0.03,
+    growLabel)
+  check('Keeping the small size is still offered', (await page.locator('button:has-text("anyway")').count()) === 1)
+
+  // Taking the suggestion must produce exactly what it promised.
+  await page.locator(`button:has-text("${growLabel.trim()}")`).first().click()
+  await page.waitForSelector('text=This will work', { timeout: 20000 })
+  await page.locator('button:has-text("Make my photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const grown = await readPreparedPhoto(page)
+  check('Taking the suggestion produces the suggested photo',
+    grown.width === Number(suggested[1]) && grown.height === Number(suggested[2]),
+    `asked ${suggested[1]}×${suggested[2]}, got ${grown.width}×${grown.height}`)
+  check('The suggested photo still fits the limit', grown.bytes <= 100 * 1024, `${(grown.bytes / 1024).toFixed(1)} KB`)
+
+  // ---- Continue anyway is honoured ----
+  await openSizeFirst(page, `${A}/test-photo-plain.jpg`)
+  await setBudgetKb(page, 100)
+  await page.locator('text=Set exact pixel dimensions').click()
+  await page.locator('input[aria-label="Width"]').fill('200')
+  await page.locator('input[aria-label="Height"]').fill('230')
+  await page.locator('button:has-text("Check my photo")').click()
+  await page.waitForSelector('text=Your limit allows a bigger photo', { timeout: 20000 })
+  await page.locator('button:has-text("anyway")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const kept = await readPreparedPhoto(page)
+  check('A warning never overrides the user', kept.width === 200 && kept.height === 230, `${kept.width}×${kept.height}`)
+  check('There is no crop step in size-first', (await page.locator('text=Frame your photo').count()) === 0)
+
+  // ---- A limit too tight for the dimensions recommends a number it can hit ----
+  await openSizeFirst(page, `${A}/test-photo-1.jpg`)
+  await setBudgetKb(page, 20)
+  await page.locator('text=Set exact pixel dimensions').click()
+  await page.locator('input[aria-label="Width"]').fill('1200')
+  await page.locator('input[aria-label="Height"]').fill('1600')
+  await page.locator('button:has-text("Check my photo")').click()
+  await page.waitForSelector('text=This size will cost some clarity', { timeout: 20000 })
+  const allowLabel = await page.locator('button:has-text("Allow ")').first().innerText()
+  const allowKb = Number(allowLabel.match(/(\d+)\s*KB/)?.[1])
+  check('It recommends a workable limit', allowKb > 20, allowLabel)
+  await page.locator(`button:has-text("${allowLabel.trim()}")`).first().click()
+  await page.waitForSelector('text=This will work', { timeout: 20000 })
+  await page.locator('button:has-text("Make my photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const relaxed = await readPreparedPhoto(page)
+  check('The app can hit the number it recommended', relaxed.bytes <= allowKb * 1024, `${(relaxed.bytes / 1024).toFixed(1)} KB against its own ${allowKb} KB`)
+
+  // ---- The old ways in still work ----
+  await openTool(page, 'smart-photo')
+  await page.waitForSelector('text=What does the form need?')
+  await page.locator('text=UPSC photo').click()
+  await page.locator('button:has-text("Continue")').click()
+  check('Presets still ask for the requirement first', (await page.locator('text=Add your photo').count()) > 0)
+
   // ---- Signature: blue ink detection ----
   await openTool(page, 'signature-maker')
   await page.waitForSelector('text=Add your signature')

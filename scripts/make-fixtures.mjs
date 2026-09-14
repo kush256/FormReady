@@ -82,6 +82,10 @@ const PLAIN_PORTRAIT = `
   ctx.beginPath(); ctx.ellipse(w / 2, h * 0.95, w * 0.3, h * 0.28, 0, 0, Math.PI * 2); ctx.fill();
 `
 await draw('test-photo-plain.jpg', 1500, 1500, PLAIN_PORTRAIT, {})
+
+// Already small. Proves the app never enlarges: given a generous limit there is
+// nothing to spend it on, and inventing pixels is not an improvement.
+await draw('test-photo-small.jpg', 240, 320, PHOTO, { a: '#7a5c9e', b: '#d6a2ad' })
 await draw('blue-signature.jpg', 900, 400, SIGNATURE, { ink: '#1B3F9B' })
 await draw('black-signature.jpg', 900, 400, SIGNATURE, { ink: '#141414' })
 
