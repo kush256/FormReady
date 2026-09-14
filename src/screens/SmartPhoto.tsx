@@ -12,7 +12,14 @@ import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
 import { PhotoIllustration } from '../components/Illustrations'
 import { captureFromCamera, pickImages } from '../lib/picker'
-import { loadCappedImage, releaseImage, renderCrop, compressToTarget, type CropRect } from '../lib/image'
+import {
+  loadCappedImage,
+  releaseImage,
+  renderCrop,
+  compressToTarget,
+  releaseCanvas,
+  type CropRect,
+} from '../lib/image'
 import { validateRequirement, type ImageRequirement } from '../lib/requirements'
 import { kbToBytes } from '../lib/format'
 
@@ -39,6 +46,11 @@ interface Prefill {
   context?: string
 }
 
+/** Lets a progress update paint before the next blocking step takes the thread. */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()))
+}
+
 export function SmartPhoto() {
   const prefill = (useLocation().state ?? null) as Prefill | null
   const preset = prefill?.requirement
@@ -57,6 +69,7 @@ export function SmartPhoto() {
 
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
+  const [stage, setStage] = useState({ label: 'Cropping to size', fraction: 0 })
   const [metSize, setMetSize] = useState(true)
 
   const target: ImageRequirement = useCustom ? custom : PRESETS[presetIndex]
@@ -91,10 +104,24 @@ export function SmartPhoto() {
 
   async function process() {
     if (!img || !crop) return
+    setStage({ label: 'Cropping to size', fraction: 0.05 })
     setStep('working')
     try {
+      // Hand the frame back so the panel is on screen before the crop takes
+      // the thread, rather than after.
+      await nextFrame()
       const canvas = renderCrop(img, crop, target.width, target.height, '#ffffff')
-      const result = await compressToTarget(canvas, { maxBytes: kbToBytes(target.maxKb) })
+
+      setStage({ label: 'Finding the best quality that fits', fraction: 0.15 })
+      await nextFrame()
+      const result = await compressToTarget(canvas, {
+        maxBytes: kbToBytes(target.maxKb),
+        onProgress: (fraction) =>
+          setStage({ label: 'Finding the best quality that fits', fraction: 0.15 + fraction * 0.8 }),
+      })
+      releaseCanvas(canvas)
+
+      setStage({ label: 'Almost there', fraction: 1 })
       setResultBlob(result.blob)
       setResultUrl(URL.createObjectURL(result.blob))
       setMetSize(result.metTarget)
@@ -256,7 +283,9 @@ export function SmartPhoto() {
           </>
         )}
 
-        {step === 'working' && <ProgressPanel label="Preparing your photo" detail="Cropping and compressing" />}
+        {step === 'working' && (
+          <ProgressPanel label="Preparing your photo" fraction={stage.fraction} detail={stage.label} />
+        )}
 
         {step === 'result' && resultUrl && resultBlob && (
           <ResultView

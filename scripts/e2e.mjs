@@ -112,14 +112,37 @@ async function main() {
   await page.waitForSelector('text=Add your photo')
   await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
   await page.waitForSelector('text=Frame your photo')
+
+  // Watch the preparing screen. It used to show a frozen bar and an ellipsis
+  // with no number, which reads as a hang.
+  let sawPanel = false
+  let sawFrozen = false
+  const prepWatch = setInterval(async () => {
+    try {
+      const panel = await page.locator('main').innerText()
+      if (!/PREPARING YOUR PHOTO/i.test(panel)) return
+      sawPanel = true
+      if (panel.includes('…')) sawFrozen = true
+    } catch {
+      // Panel gone between polls; the run finished.
+    }
+  }, 25)
+
   await page.locator('button:has-text("Prepare photo")').click()
   await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  clearInterval(prepWatch)
+  check('Preparing shows a real percentage, not a frozen bar', !sawFrozen, sawPanel ? 'panel observed' : 'panel too brief to observe')
   const sp = await page.locator('main').innerText()
   check('Smart Photo hits 200×230', sp.includes('200×230 px'))
   check('Smart Photo meets every requirement', sp.includes('Meets every requirement'))
   const sizes = [...sp.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
   check('Result is smaller than the source', sizes.length >= 2 && sizes[1] < sizes[0], JSON.stringify(sizes))
   check('Result is under the 50 KB cap', sizes[1] <= 50, `${sizes[1]}KB`)
+  // The cap is a ceiling, not a goal. A photo that could have been encoded at
+  // full quality inside the allowance must not come back at a few kilobytes
+  // with the rest of the budget thrown away.
+  // 14 KB was the old ceiling-capped result; 39 KB is what the allowance buys.
+  check('Photo uses the quality its limit allows', sizes[1] >= 25, `${sizes[1]} KB of a 50 KB allowance`)
   check('Save and Share are separate', (await page.locator('button:has-text("Save to device")').count()) === 1 && (await page.locator('button:has-text("Share")').count()) === 1)
   await page.locator('button:has-text("Save to device")').click()
   await page.waitForSelector('text=Saved to', { timeout: 10000 })

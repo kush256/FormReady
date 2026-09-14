@@ -184,30 +184,70 @@ export interface CompressResult {
 }
 
 /**
- * Binary-searches JPEG/WEBP quality to land at or under maxBytes while
- * keeping pixel dimensions fixed. Falls back to the smallest-quality
- * result if the target can't be met (metTarget=false so the caller can warn).
+ * The best a JPEG encoder will do. Worth preferring whenever it fits: at the
+ * very top the encoder also stops subsampling colour, which is what softens
+ * fine detail and coloured text, so the step up from 0.95 is a real one rather
+ * than simply more bytes.
+ */
+const TOP_QUALITY = 1
+
+/** Attempts in the search for the best quality that still fits. */
+const SEARCH_STEPS = 8
+
+/**
+ * Encodes the canvas at the best quality that fits inside `maxBytes`.
+ *
+ * The size limit on a form is a ceiling, not a goal. Spending it down to the
+ * last byte buys nothing, but neither does leaving most of it unused: a photo
+ * allowed 100 KB was coming back at 4.6 KB because the search could never
+ * climb past 0.95, with the headroom simply thrown away. So the best encode is
+ * tried first, and only when that will not fit does the search begin.
  */
 export async function compressToTarget(
   canvas: HTMLCanvasElement,
-  opts: { maxBytes: number; mimeType?: 'image/jpeg' | 'image/webp'; minQuality?: number },
+  opts: {
+    maxBytes: number
+    mimeType?: 'image/jpeg' | 'image/webp'
+    minQuality?: number
+    /** Reports 0..1 as attempts complete, so the caller can show real progress. */
+    onProgress?: (fraction: number) => void
+  },
 ): Promise<CompressResult> {
   const mimeType = opts.mimeType ?? 'image/jpeg'
   const minQuality = opts.minQuality ?? 0.2
-  let lo = minQuality
-  let hi = 0.95
-  let best: CompressResult | null = null
 
-  // First check the floor — if even minimum quality is too big, dimensions
-  // are simply too large for the budget; return the smallest we can make.
-  const floorBlob = await canvasToBlob(canvas, mimeType, minQuality)
-  if (floorBlob.size > opts.maxBytes) {
-    return { blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: false }
+  let done = 0
+  const totalSteps = 2 + SEARCH_STEPS
+  const step = () => opts.onProgress?.(Math.min(0.99, ++done / totalSteps))
+  const finish = <T,>(result: T): T => {
+    opts.onProgress?.(1)
+    return result
   }
 
-  for (let i = 0; i < 8; i++) {
+  // Nothing to gain from the search when the budget already covers the best
+  // encode — and this is the common case for a small passport-sized photo.
+  const finest = await canvasToBlob(canvas, mimeType, TOP_QUALITY)
+  step()
+  if (finest.size <= opts.maxBytes) {
+    return finish({ blob: finest, quality: TOP_QUALITY, bytes: finest.size, metTarget: true })
+  }
+
+  // Check the floor — if even minimum quality is too big, the dimensions are
+  // simply too large for the budget; return the smallest we can make.
+  const floorBlob = await canvasToBlob(canvas, mimeType, minQuality)
+  step()
+  if (floorBlob.size > opts.maxBytes) {
+    return finish({ blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: false })
+  }
+
+  let lo = minQuality
+  let hi = TOP_QUALITY
+  let best: CompressResult | null = null
+
+  for (let i = 0; i < SEARCH_STEPS; i++) {
     const mid = (lo + hi) / 2
     const blob = await canvasToBlob(canvas, mimeType, mid)
+    step()
     if (blob.size <= opts.maxBytes) {
       best = { blob, quality: mid, bytes: blob.size, metTarget: true }
       lo = mid
@@ -216,8 +256,8 @@ export async function compressToTarget(
     }
   }
 
-  if (best) return best
-  return { blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: floorBlob.size <= opts.maxBytes }
+  if (best) return finish(best)
+  return finish({ blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: floorBlob.size <= opts.maxBytes })
 }
 
 /**
