@@ -36,7 +36,9 @@ export function ExamDetail() {
     const path = doc.kind === 'signature' ? '/signature-maker' : '/smart-photo'
     navigate(path, {
       state: {
-        requirement: { width: doc.width, height: doc.height, maxKb: doc.maxKb },
+        // The whole spec travels, minimum included. Dropping it here is what let
+        // a photo come out under the floor the form states and the list shows.
+        requirement: { width: doc.width, height: doc.height, maxKb: doc.maxKb, minKb: doc.minKb },
         label: doc.label,
         context: exam!.name,
       },

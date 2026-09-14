@@ -148,6 +148,48 @@ async function main() {
   await page.waitForSelector('text=Saved to', { timeout: 10000 })
   check('Save confirms a destination', (await page.locator('text=Saved to').count()) > 0)
 
+  // ---- The size band a form states, not just its ceiling ----
+  // SSC asks for 20-50 KB. A busy photo clears the floor; a plain one does not,
+  // and a file under the floor is rejected as surely as one over the ceiling.
+  // Nothing enforced this before: the minimum was in the exam data, shown in the
+  // exam list, and then dropped on the way to this screen.
+  check('SSC preset states its minimum', sp.includes('≥ 20 KB'), sp.match(/[≥≤]\s*\d+\s*KB/g)?.join(' ') ?? 'no size chips')
+
+  await openTool(page, 'smart-photo')
+  await page.waitForSelector('text=What does the form need?')
+  await page.locator('text=SSC / IBPS photo').click()
+  await page.locator('button:has-text("Continue")').click()
+  await page.waitForSelector('text=Add your photo')
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-plain.jpg`])
+  await page.waitForSelector('text=Frame your photo')
+  await page.locator('button:has-text("Prepare photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const plain = await page.locator('main').innerText()
+  const plainKb = [...plain.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))[1]
+  check('A plain photo really does fall under the minimum', plainKb < 20, `${plainKb} KB against a 20 KB floor`)
+  check('Falling under the minimum is flagged, not passed', !plain.includes('Meets every requirement'), plain.slice(0, 90).replace(/\n/g, ' '))
+  check('The rejection risk is spelled out', /may be rejected/i.test(plain))
+
+  // ---- A result far under its limit is explained, not left looking broken ----
+  // 200x230 holds only so much detail. When the encoder is already at maximum,
+  // the unused allowance cannot be spent, and saying so is the difference
+  // between a correct result and one that reads as a failure.
+  await openTool(page, 'smart-photo')
+  await page.waitForSelector('text=What does the form need?')
+  await page.locator('text=Custom requirement').click()
+  await page.locator('input[aria-label="Max KB"]').fill('100')
+  await page.locator('button:has-text("Continue")').click()
+  await page.waitForSelector('text=Add your photo')
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-plain.jpg`])
+  await page.waitForSelector('text=Frame your photo')
+  await page.locator('button:has-text("Prepare photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const roomy = await page.locator('main').innerText()
+  const roomyKb = [...roomy.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))[1]
+  check('Reproduces the reported case: far under the limit', roomyKb < 100 * 0.6, `${roomyKb} KB of 100 KB`)
+  check('Explains why the allowance is unspendable', /all the detail/i.test(roomy), roomy.slice(0, 90).replace(/\n/g, ' '))
+  check('Explaining it does not turn the result amber', roomy.includes('Meets every requirement'))
+
   // ---- Signature: blue ink detection ----
   await openTool(page, 'signature-maker')
   await page.waitForSelector('text=Add your signature')

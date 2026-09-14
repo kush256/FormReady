@@ -63,6 +63,25 @@ const SIGNATURE = `
 
 await draw('test-photo-1.jpg', 1600, 1200, PHOTO, { a: '#4a90d9', b: '#7bc47f' })
 await draw('test-photo-2.jpg', 1200, 1600, PHOTO, { a: '#e07a5f', b: '#f2cc8f' })
+
+/**
+ * A plain portrait: smooth background, soft shapes, almost no fine detail.
+ *
+ * This is the shape behind the complaint. Squeezed into 200×230 it encodes to
+ * only a few kilobytes even at maximum quality — which is under the 20 KB floor
+ * SSC states, so the form would reject it. A busy fixture cannot catch that,
+ * because a busy photo clears the floor comfortably.
+ */
+const PLAIN_PORTRAIT = `
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#eef2f7'); g.addColorStop(1, '#dde5ee');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#c9b9a8';
+  ctx.beginPath(); ctx.ellipse(w / 2, h * 0.42, w * 0.17, h * 0.22, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#5b6b80';
+  ctx.beginPath(); ctx.ellipse(w / 2, h * 0.95, w * 0.3, h * 0.28, 0, 0, Math.PI * 2); ctx.fill();
+`
+await draw('test-photo-plain.jpg', 1500, 1500, PLAIN_PORTRAIT, {})
 await draw('blue-signature.jpg', 900, 400, SIGNATURE, { ink: '#1B3F9B' })
 await draw('black-signature.jpg', 900, 400, SIGNATURE, { ink: '#141414' })
 

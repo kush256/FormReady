@@ -20,8 +20,13 @@ import {
   releaseCanvas,
   type CropRect,
 } from '../lib/image'
-import { validateRequirement, type ImageRequirement } from '../lib/requirements'
-import { kbToBytes } from '../lib/format'
+import {
+  describeRequirement,
+  explainMaxQuality,
+  validateRequirement,
+  type ImageRequirement,
+} from '../lib/requirements'
+import { formatBytes, kbToBytes } from '../lib/format'
 
 interface Preset extends ImageRequirement {
   label: string
@@ -31,7 +36,9 @@ interface Preset extends ImageRequirement {
 // Common starting points. Always confirm against the live notification for
 // the exam being applied to — portals do change these between cycles.
 const PRESETS: Preset[] = [
-  { label: 'SSC / IBPS photo', note: 'Most recruitment portals', width: 200, height: 230, maxKb: 50 },
+  // SSC states a band, not a ceiling: a photo under 20 KB is rejected as surely
+  // as one over 50.
+  { label: 'SSC / IBPS photo', note: 'Most recruitment portals', width: 200, height: 230, minKb: 20, maxKb: 50 },
   { label: 'UPSC photo', note: 'Square crop', width: 350, height: 350, maxKb: 50 },
   { label: 'Passport size', note: 'Larger print-quality photo', width: 413, height: 531, maxKb: 100 },
   { label: 'Admit card photo', note: 'Smaller exam portals', width: 150, height: 200, maxKb: 30 },
@@ -71,8 +78,12 @@ export function SmartPhoto() {
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [stage, setStage] = useState({ label: 'Cropping to size', fraction: 0 })
   const [metSize, setMetSize] = useState(true)
+  /** The quality the encoder settled on, which says whether headroom is spendable. */
+  const [resultQuality, setResultQuality] = useState(1)
 
   const target: ImageRequirement = useCustom ? custom : PRESETS[presetIndex]
+  // A file under a stated floor is rejected as surely as one over the ceiling.
+  const metMinimum = !target.minKb || !resultBlob || resultBlob.size >= kbToBytes(target.minKb)
   const aspect = useMemo(() => target.width / target.height, [target.width, target.height])
   const issue = useMemo(() => (useCustom ? validateRequirement(custom) : null), [useCustom, custom])
 
@@ -125,6 +136,7 @@ export function SmartPhoto() {
       setResultBlob(result.blob)
       setResultUrl(URL.createObjectURL(result.blob))
       setMetSize(result.metTarget)
+      setResultQuality(result.quality)
       setStep('result')
     } catch {
       setError('Something went wrong while preparing the photo.')
@@ -150,10 +162,10 @@ export function SmartPhoto() {
         title={prefill?.label ?? 'Smart Photo'}
         subtitle={
           prefill?.context
-            ? `${prefill.context} · ${target.width}×${target.height} px · ≤ ${target.maxKb} KB`
+            ? `${prefill.context} · ${describeRequirement(target)}`
             : step === 'requirement'
               ? undefined
-              : `${target.width}×${target.height} px · ≤ ${target.maxKb} KB`
+              : describeRequirement(target)
         }
       />
 
@@ -210,30 +222,64 @@ export function SmartPhoto() {
             </div>
 
             {useCustom && (
-              <div className="grid grid-cols-3 gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
-                {(
-                  [
-                    ['Width', 'width'],
-                    ['Height', 'height'],
-                    ['Max KB', 'maxKb'],
-                  ] as const
-                ).map(([label, key]) => (
-                  <label key={key}>
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
+                <div className="grid grid-cols-3 gap-3">
+                  {(
+                    [
+                      ['Width', 'width'],
+                      ['Height', 'height'],
+                      ['Max KB', 'maxKb'],
+                    ] as const
+                  ).map(([label, key]) => (
+                    <label key={key}>
+                      <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
+                        {label}
+                      </span>
+                      <div className="mt-1">
+                        <NumberField
+                          value={custom[key]}
+                          min={key === 'maxKb' ? 1 : 20}
+                          invalid={!!issue}
+                          ariaLabel={label}
+                          onChange={(v) => setCustom({ ...custom, [key]: v })}
+                          className="px-2 text-sm"
+                        />
+                      </div>
+                    </label>
+                  ))}
+                </div>
+
+                {/* Many portals state a band. A file under the floor is rejected
+                    just as firmly as one over the ceiling, so it is worth asking. */}
+                <label className="mt-3 flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={custom.minKb !== undefined}
+                    onChange={(e) =>
+                      setCustom({ ...custom, minKb: e.target.checked ? 20 : undefined })
+                    }
+                    className="h-4 w-4 accent-[var(--accent)]"
+                  />
+                  <span className="text-sm text-[var(--ink-2)]">The form also states a minimum size</span>
+                </label>
+
+                {custom.minKb !== undefined && (
+                  <label className="mt-3 block">
                     <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                      {label}
+                      Min KB
                     </span>
-                    <div className="mt-1">
+                    <div className="mt-1 max-w-[7rem]">
                       <NumberField
-                        value={custom[key]}
-                        min={key === 'maxKb' ? 1 : 20}
+                        value={custom.minKb}
+                        min={1}
                         invalid={!!issue}
-                        ariaLabel={label}
-                        onChange={(v) => setCustom({ ...custom, [key]: v })}
+                        ariaLabel="Min KB"
+                        onChange={(v) => setCustom({ ...custom, minKb: v })}
                         className="px-2 text-sm"
                       />
                     </div>
                   </label>
-                ))}
+                )}
               </div>
             )}
 
@@ -298,13 +344,19 @@ export function SmartPhoto() {
             checks={[
               { label: `${target.width}×${target.height} px`, ok: true },
               { label: `≤ ${target.maxKb} KB`, ok: metSize },
+              ...(target.minKb
+                ? [{ label: `≥ ${target.minKb} KB`, ok: metMinimum }]
+                : []),
               { label: 'JPG', ok: true },
             ]}
             warning={
-              metSize
-                ? undefined
-                : `This photo couldn't go under ${target.maxKb} KB at usable quality. A plainer background usually compresses further.`
+              !metSize
+                ? `This photo couldn't go under ${target.maxKb} KB at usable quality. A plainer background usually compresses further.`
+                : !metMinimum
+                  ? `This form asks for at least ${target.minKb} KB and your photo came to ${formatBytes(resultBlob.size)}. At ${target.width}×${target.height} px it is already at the highest quality there is, so the file cannot be made larger without more pixels — which the form does not allow. A normal photograph of a person usually clears the minimum; a plain or very dark image often does not. Uploading this may be rejected.`
+                  : undefined
             }
+            note={explainMaxQuality({ quality: resultQuality, bytes: resultBlob.size }, target) ?? undefined}
             onStartOver={reset}
             startOverLabel="Another photo"
           />

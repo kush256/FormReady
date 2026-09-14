@@ -162,6 +162,21 @@ export function estimateSmallestJpegBytes(width: number, height: number): number
   return Math.max(2048, Math.round(width * height * 0.07))
 }
 
+/**
+ * Roughly the most a JPEG of these dimensions can weigh, at the encoder's best
+ * setting. The mirror of the floor above, and needed for the same reason: a
+ * form that demands a *minimum* size can ask for something the pixel count
+ * cannot deliver, and no amount of re-encoding adds bytes that are not there.
+ *
+ * Measured on this codebase: a flat, dark 200×230 screenshot lands at 0.19
+ * bytes per pixel at quality 1.0, a detailed one at 0.39, and a photograph of a
+ * person higher still. This errs generously high, because the cost of being
+ * wrong is telling someone their requirement is impossible when it is not.
+ */
+export function estimateLargestJpegBytes(width: number, height: number): number {
+  return Math.max(4096, Math.round(width * height * 0.9))
+}
+
 export function canvasToBlob(
   canvas: HTMLCanvasElement,
   type: string,

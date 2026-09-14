@@ -24,6 +24,13 @@ interface Props {
   summary?: string
   checks?: ResultCheck[]
   warning?: string
+  /**
+   * Neutral explanation for a result that is fine but looks surprising — a
+   * photo landing far under its limit because its dimensions cannot hold more
+   * detail. Deliberately not `warning`: amber would say something is wrong.
+   * Suppressed when a real warning is present, so the two never compete.
+   */
+  note?: string
   onStartOver: () => void
   startOverLabel?: string
 }
@@ -43,6 +50,7 @@ export function ResultView({
   summary,
   checks = [],
   warning,
+  note,
   onStartOver,
   startOverLabel = 'Start over',
 }: Props) {
@@ -152,6 +160,12 @@ export function ResultView({
       {warning && (
         <p className="rounded-xl bg-[var(--warn-soft)] px-4 py-3 text-xs leading-relaxed text-[var(--warn)]">
           {warning}
+        </p>
+      )}
+
+      {note && !warning && (
+        <p className="rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-xs leading-relaxed text-[var(--ink-2)]">
+          {note}
         </p>
       )}
 
