@@ -245,6 +245,10 @@ export interface CompressPdfResult {
   copiedPages: number
   /** Re-encoding the pages was measured to be pointless, so it was skipped. */
   notWorthRasterising?: boolean
+  /** The pages are scanned text and going smaller would have blurred the words. */
+  stoppedForLegibility?: boolean
+  /** The work was measured to cost far more time than the saving was worth. */
+  notWorthTheTime?: { minutes: number; savingPercent: number }
 }
 
 export interface CompressProgress {
@@ -302,10 +306,49 @@ function yieldToUi(force = false): Promise<void> {
 
 /** Leaves headroom for the PDF's own structure on top of the page images. */
 const STRUCTURE_HEADROOM = 0.92
-const MIN_QUALITY = 0.3
 const MAX_QUALITY = 0.82
-const MIN_SCALE = 0.45
-const MAX_SCALE = 1.6
+
+/**
+ * How far the renderer may move, and in which direction it gives ground.
+ *
+ * pdf.js scale 1 is 72 DPI, so these are resolutions in disguise. Which limits
+ * apply depends entirely on what the page holds, because the two kinds of page
+ * fail in opposite directions:
+ *
+ * A photograph tolerates a startling amount of JPEG damage but looks obviously
+ * wrong once it loses pixels, so it may be shrunk a long way and kept at decent
+ * quality. A scan of text is the reverse. Letter strokes are one or two pixels
+ * wide; drop below about 120 DPI and they stop being letters no matter how high
+ * the quality, while at a sane resolution text survives quality levels that
+ * would ruin a photograph. Resolution is therefore defended for text and
+ * quality is spent instead — and when even that is not enough, the compressor
+ * stops rather than handing back a page nobody can read.
+ */
+interface RenderLimits {
+  minScale: number
+  maxScale: number
+  minQuality: number
+  maxPixels: number
+  /** The pages are scans of text, so legibility sets the floor. */
+  text: boolean
+}
+
+const PHOTO_LIMITS: RenderLimits = {
+  minScale: 0.45,
+  maxScale: 1.6,
+  minQuality: 0.3,
+  maxPixels: 1_600_000,
+  text: false,
+}
+
+/** 120 DPI at the floor, 150 at the ceiling: the readable band for scanned text. */
+const TEXT_LIMITS: RenderLimits = {
+  minScale: 120 / 72,
+  maxScale: 150 / 72,
+  minQuality: 0.4,
+  maxPixels: 2_300_000,
+  text: true,
+}
 
 /**
  * pdf-lib parses a whole document into JavaScript objects, costing several
@@ -321,11 +364,19 @@ const PDF_LIB_HOLD_BYTES = 8 * 1024 * 1024
 /** Reading the operator list of every page is only worth it on shorter documents. */
 const PLAN_MAX_PAGES = 60
 
-/** Caps one rendered page, so an oversized page can't allocate a huge canvas. */
-const MAX_PAGE_PIXELS = 1_600_000
-
 /** Pages measured before deciding whether rasterising the rest is worth it. */
 const SAMPLE_PAGES = 3
+
+/**
+ * A long run has to be worth the wait.
+ *
+ * A already-efficient scan of a few hundred pages can be re-encoded for a few
+ * percent, and on a phone that costs the better part of an hour. Nobody wants
+ * that trade, and the person waiting cannot see it coming. Both sides of it are
+ * measurable from the sampling pass, before a single page is committed to.
+ */
+const WORTHWHILE_SAVING = 0.15
+const LONG_RUN_MS = 45_000
 
 /**
  * How many times the sampled measurement is fed back into the settings before
@@ -456,14 +507,15 @@ export async function compressPdf(
 
   const budgetPerPage = Math.max(2048, (maxBytes * STRUCTURE_HEADROOM) / Math.max(1, rasterCount))
   const samplePage = plan.find((p) => p.rasterise)!.index
-  let settings = await calibrate(renderDoc, samplePage, budgetPerPage, signal)
+  const { limits, ...calibrated } = await calibrate(renderDoc, samplePage, budgetPerPage, signal)
+  let settings = calibrated
   throwIfAborted(signal)
 
   // Measure a handful of pages before committing to hundreds of them. A long
   // document that is mostly text gains nothing from rasterisation and can even
   // grow, and finding that out after forty minutes of work is unforgivable.
   const sampleSpan = SAMPLE_SPAN / (PROJECTION_ROUNDS + 1)
-  let projection = await project(renderDoc, plan, settings, {
+  let projection = await project(renderDoc, plan, settings, limits, {
     signal,
     onProgress,
     pageCount,
@@ -480,11 +532,11 @@ export async function compressPdf(
   const projectionTarget = maxBytes * STRUCTURE_HEADROOM
   for (let round = 1; round <= PROJECTION_ROUNDS && projection.bytes > projectionTarget; round++) {
     const overshoot = projection.bytes / projectionTarget
-    const next = shrink(settings, overshoot)
+    const next = shrink(settings, overshoot, limits)
     // Both levers are already at their floor: no round will help.
     if (next.scale === settings.scale && next.quality === settings.quality) break
     settings = next
-    projection = await project(renderDoc, plan, settings, {
+    projection = await project(renderDoc, plan, settings, limits, {
       signal,
       onProgress,
       pageCount,
@@ -508,8 +560,28 @@ export async function compressPdf(
     }
   }
 
+  // The saving is real but slight, and the work is long. Say so now rather than
+  // discovering it together forty minutes from here.
+  const projectedMs = projection.msPerPage * plan.length
+  const saving = 1 - projection.bytes / fallback.byteLength
+  if (saving < WORTHWHILE_SAVING && projectedMs > LONG_RUN_MS) {
+    return {
+      bytes: fallback,
+      metTarget: fallback.byteLength <= maxBytes,
+      originalBytes,
+      finalBytes: fallback.byteLength,
+      method: fallbackMethod,
+      rasterisedPages: 0,
+      copiedPages: pageCount,
+      notWorthTheTime: {
+        minutes: Math.max(1, Math.round(projectedMs / 60000)),
+        savingPercent: Math.max(1, Math.round(saving * 100)),
+      },
+    }
+  }
+
   try {
-    let best = await assemble(renderDoc, srcDoc, plan, settings, {
+    let best = await assemble(renderDoc, srcDoc, plan, settings, limits, {
       onProgress,
       signal,
       pageCount,
@@ -526,10 +598,10 @@ export async function compressPdf(
     // still a real result — losing it to an error would be absurd.
     const overshoot = best.byteLength / maxBytes
     if (overshoot > REFINE_THRESHOLD) {
-      const corrected = shrink(settings, overshoot)
+      const corrected = shrink(settings, overshoot, limits)
       if (corrected.scale !== settings.scale || corrected.quality !== settings.quality) {
         try {
-          const retry = await assemble(renderDoc, srcDoc, plan, corrected, {
+          const retry = await assemble(renderDoc, srcDoc, plan, corrected, limits, {
             onProgress,
             signal,
             pageCount,
@@ -568,6 +640,7 @@ export async function compressPdf(
       method: 'rasterised',
       rasterisedPages: rasterCount,
       copiedPages: pageCount - rasterCount,
+      stoppedForLegibility: limits.text && best.byteLength > maxBytes,
     }
   } catch (e) {
     if (isCancellation(e)) throw e
@@ -592,11 +665,17 @@ function clamp(value: number, min: number, max: number): number {
 function shrink(
   settings: { scale: number; quality: number },
   overshoot: number,
+  limits: RenderLimits,
 ): { scale: number; quality: number } {
   const factor = Math.sqrt(overshoot)
+  // On text, resolution does not move. Every correction comes out of quality,
+  // and stops at the floor rather than dissolving the letters.
+  const scale = limits.text
+    ? settings.scale
+    : clamp(settings.scale / Math.sqrt(factor), limits.minScale, limits.maxScale)
   return {
-    scale: clamp(settings.scale / Math.sqrt(factor), MIN_SCALE, MAX_SCALE),
-    quality: clamp(settings.quality / factor, MIN_QUALITY, MAX_QUALITY),
+    scale,
+    quality: clamp(settings.quality / factor, limits.minQuality, MAX_QUALITY),
   }
 }
 
@@ -655,32 +734,82 @@ async function buildPagePlan(
   return plan
 }
 
-/** Keeps a single page's canvas within a sane allocation. */
-function cappedScale(page: pdfjsLib.PDFPageProxy, desired: number): number {
+/**
+ * Keeps a single page's canvas within a sane allocation.
+ *
+ * The floor wins over the cap: on a text page an unreadable render is worth
+ * nothing, so it is better to allocate the memory than to save it.
+ */
+function cappedScale(page: pdfjsLib.PDFPageProxy, desired: number, limits: RenderLimits): number {
   const viewport = page.getViewport({ scale: desired })
   const pixels = viewport.width * viewport.height
-  if (pixels <= MAX_PAGE_PIXELS) return desired
-  return Math.max(MIN_SCALE, desired * Math.sqrt(MAX_PAGE_PIXELS / pixels))
+  if (pixels <= limits.maxPixels) return desired
+  return Math.max(limits.minScale, desired * Math.sqrt(limits.maxPixels / pixels))
 }
 
 /**
- * Renders one page and encodes it at two qualities, then interpolates the
- * quality that lands on the per-page budget. Two encodes instead of eight
- * full-document rebuilds.
+ * Decides whether a rendered page is a scan of text rather than a photograph.
+ *
+ * Scanned text is bimodal: mostly paper, a little ink, and almost nothing in
+ * between. A photograph fills that middle. Sampling every fourth pixel is more
+ * than enough to tell them apart.
+ */
+function looksLikeText(canvas: HTMLCanvasElement): boolean {
+  const ctx = canvas.getContext('2d')
+  if (!ctx || canvas.width === 0 || canvas.height === 0) return false
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+
+  let light = 0
+  let dark = 0
+  let mid = 0
+  for (let i = 0; i < data.length; i += 16) {
+    const luma = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) / 255
+    if (luma > 0.82) light++
+    else if (luma < 0.35) dark++
+    else mid++
+  }
+
+  const total = light + dark + mid
+  if (total === 0) return false
+  // Mostly paper, some ink, little in between.
+  return light / total > 0.55 && dark / total > 0.004 && mid / total < 0.22
+}
+
+/**
+ * Works out how to render this document: first what kind of pages it has, then
+ * the resolution and quality those pages can afford.
+ *
+ * The classification has to come first and has to be its own render. Deciding
+ * the scale from a byte budget and only then looking at the result is how a
+ * page of text ended up rendered at 32 DPI: the budget said it could afford
+ * seventy thousand pixels for a whole A4 sheet, and nothing in the process ever
+ * asked whether the words were still words.
  */
 async function calibrate(
   doc: pdfjsLib.PDFDocumentProxy,
   pageNumber: number,
   budgetPerPage: number,
   signal?: AbortSignal,
-): Promise<{ scale: number; quality: number }> {
+): Promise<{ scale: number; quality: number; limits: RenderLimits }> {
   const page = await doc.getPage(pageNumber)
-  // Start from the resolution the per-page budget can actually afford, rather
-  // than a fixed high scale that a long document can never sustain.
   const viewport = page.getViewport({ scale: 1 })
-  const affordablePixels = Math.min(MAX_PAGE_PIXELS, budgetPerPage / BYTES_PER_PIXEL_GUESS)
-  const wanted = clamp(Math.sqrt(affordablePixels / (viewport.width * viewport.height)), MIN_SCALE, MAX_SCALE)
-  const scale = cappedScale(page, wanted)
+
+  // Classify at a fixed, readable resolution. Judging the page from a render
+  // the budget already starved would tell us nothing.
+  const probe = await renderPageToCanvas(page, cappedScale(page, 1, PHOTO_LIMITS))
+  const limits = looksLikeText(probe) ? TEXT_LIMITS : PHOTO_LIMITS
+  releaseCanvas(probe)
+  throwIfAborted(signal)
+
+  // Start from the resolution the per-page budget can afford, but never below
+  // the floor this kind of page needs to stay meaningful.
+  const affordablePixels = Math.min(limits.maxPixels, budgetPerPage / BYTES_PER_PIXEL_GUESS)
+  const wanted = clamp(
+    Math.sqrt(affordablePixels / (viewport.width * viewport.height)),
+    limits.minScale,
+    limits.maxScale,
+  )
+  const scale = cappedScale(page, wanted, limits)
   const canvas = await renderPageToCanvas(page, scale)
   page.cleanup()
   throwIfAborted(signal)
@@ -689,17 +818,21 @@ async function calibrate(
   const low = (await canvasToBlob(canvas, 'image/jpeg', 0.4)).size
   releaseCanvas(canvas)
 
-  if (high <= budgetPerPage) return { scale, quality: MAX_QUALITY }
+  if (high <= budgetPerPage) return { scale, quality: MAX_QUALITY, limits }
 
   if (low > budgetPerPage) {
-    // Even low quality is too heavy at this resolution, so shed pixels.
-    // JPEG size tracks pixel count, which scales with the square of `scale`.
-    const shrunk = clamp(scale * Math.sqrt(budgetPerPage / low), MIN_SCALE, MAX_SCALE)
-    return { scale: shrunk, quality: 0.45 }
+    // Even low quality is too heavy here. On a photograph, shed pixels: JPEG
+    // size tracks pixel count, which scales with the square of `scale`. On
+    // text there are no pixels to spare, so hold the resolution, take the
+    // lowest quality that still keeps strokes clean, and let the result come
+    // out over the target — the caller says so plainly rather than pretending.
+    if (limits.text) return { scale, quality: limits.minQuality, limits }
+    const shrunk = clamp(scale * Math.sqrt(budgetPerPage / low), limits.minScale, limits.maxScale)
+    return { scale: shrunk, quality: 0.45, limits }
   }
 
   const t = (budgetPerPage - low) / (high - low)
-  return { scale, quality: clamp(0.4 + t * (0.75 - 0.4), MIN_QUALITY, MAX_QUALITY) }
+  return { scale, quality: clamp(0.4 + t * (0.75 - 0.4), limits.minQuality, MAX_QUALITY), limits }
 }
 
 async function assemble(
@@ -707,6 +840,7 @@ async function assemble(
   srcDoc: PDFDocument | null,
   plan: PagePlan[],
   settings: { scale: number; quality: number },
+  limits: RenderLimits,
   ctx: {
     onProgress?: (p: CompressProgress) => void
     signal?: AbortSignal
@@ -729,7 +863,7 @@ async function assemble(
 
     if (entry.rasterise || !srcDoc) {
       const page = await renderDoc.getPage(entry.index)
-      const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale), scratch)
+      const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale, limits), scratch)
       const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
 
       const jpegBytes = new Uint8Array(await jpeg.arrayBuffer())
@@ -777,6 +911,7 @@ async function project(
   doc: pdfjsLib.PDFDocumentProxy,
   plan: PagePlan[],
   settings: { scale: number; quality: number },
+  limits: RenderLimits,
   ctx: {
     signal?: AbortSignal
     onProgress?: (p: CompressProgress) => void
@@ -796,7 +931,7 @@ async function project(
   for (const [i, entry] of samples.entries()) {
     throwIfAborted(ctx.signal)
     const page = await doc.getPage(entry.index)
-    const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale), scratch)
+    const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale, limits), scratch)
     const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
     page.cleanup()
     totalBytes += jpeg.size

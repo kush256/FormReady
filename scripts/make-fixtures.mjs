@@ -285,6 +285,53 @@ async function longTextPdf(name, pages) {
 await mixedPdf('test-doc-mixed.pdf')
 await longTextPdf('test-doc-long-text.pdf', 300)
 await unevenPdf('test-doc-uneven.pdf', 24)
+
+/**
+ * A scanned book: every page is a photograph of text, with no text layer.
+ *
+ * This is the shape that came back unreadable. There is nothing to copy across
+ * and nothing to keep sharp by leaving it alone — the words only survive if the
+ * compressor refuses to drop below a legible resolution.
+ */
+async function scannedPdf(name, pages) {
+  // 300 DPI A4 — what a scanner app actually hands you, and far more than a
+  // screen needs. There is a lot to reclaim here, but not without limit.
+  const scan = await page.evaluate(() => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 2480
+    canvas.height = 3508
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#f7f5f0'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // Faint paper grain, so it reads as a scan rather than clean vector text.
+    for (let i = 0; i < 24000; i++) {
+      ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.05})`
+      ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, 2, 2)
+    }
+    ctx.fillStyle = '#1a1a1a'
+    ctx.font = '56px Georgia, serif'
+    const line =
+      'The collective gross body and the individual gross body are in essence'
+    for (let i = 0; i < 40; i++) {
+      ctx.fillText(line, 240, 360 + i * 76)
+    }
+    // Generously encoded, the way a scanner app leaves it: there is real
+    // room to compress here, but not unlimited room.
+    return canvas.toDataURL('image/jpeg', 0.96)
+  })
+
+  const doc = await PDFDocument.create()
+  const image = await doc.embedJpg(Buffer.from(scan.split(',')[1], 'base64'))
+  for (let i = 0; i < pages; i++) {
+    const pg = doc.addPage([595, 842])
+    pg.drawImage(image, { x: 0, y: 0, width: 595, height: 842 })
+  }
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log('wrote', name, (bytes.byteLength / 1024).toFixed(0), 'KB', `(${pages} scanned pages)`)
+}
+
+await scannedPdf('test-doc-scan.pdf', 10)
 await hugePdf('test-doc-huge.pdf', 41)
 
 await browser.close()

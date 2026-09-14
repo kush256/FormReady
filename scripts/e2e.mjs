@@ -9,6 +9,7 @@
  */
 import { chromium } from 'playwright'
 import path from 'node:path'
+import fs from 'node:fs'
 
 const BASE = process.env.BASE_URL || 'http://localhost:4173'
 const A = path.resolve('.fixtures')
@@ -47,7 +48,17 @@ async function main() {
   page.on('pageerror', (e) => console.log('PAGE ERROR:', e.message))
   // Saving falls back to a browser download outside Capacitor; capture it.
   const downloads = []
-  page.on('download', (d) => downloads.push(d.suggestedFilename()))
+  const savedTo = new Map()
+  page.on('download', async (d) => {
+    downloads.push(d.suggestedFilename())
+    const dest = path.join(A, `saved-${d.suggestedFilename()}`)
+    try {
+      await d.saveAs(dest)
+      savedTo.set(d.suggestedFilename(), dest)
+    } catch {
+      // A download that cannot be written is caught by the checks that use it.
+    }
+  })
 
   // ---- Onboarding shows on first launch ----
   await page.goto(BASE)
@@ -371,6 +382,67 @@ async function main() {
   check('Tight target still produces a file', tightText.includes('ready') || tightText.includes('smaller'))
   const tightSizes = [...tightText.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
   check('Tight target lands under the limit', tightSizes.length >= 2 && tightSizes[1] <= 400, JSON.stringify(tightSizes))
+
+  // ---- Scanned book: the words have to stay readable ----
+  // Every page is a photograph of text. Asked for a size it cannot reach, the
+  // compressor used to drop to 32 DPI and hand back dissolved letters. It must
+  // now hold a legible resolution and say it stopped, rather than obey the
+  // number and destroy the document.
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-scan.pdf`])
+  await page.waitForSelector('text=Maximum size')
+  await page.getByRole('button', { name: 'KB', exact: true }).click()
+  const scanField = page.locator('input[inputmode="numeric"]').first()
+  await scanField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  // 10 KB a page: real compression is possible here, but not this much.
+  await page.keyboard.type('100')
+  await page.locator('body').click()
+  await page.waitForTimeout(200)
+  await page.locator('button:has-text("Compress PDF")').click()
+  await page.waitForSelector('button:has-text("Save to device")', { timeout: 180000 })
+  const scanText = await page.locator('main').innerText()
+  // Either honest answer is fine — "it would blur the words" or "re-encoding
+  // would not have helped". What must never happen is silently obeying the
+  // number by destroying the text.
+  check(
+    'Impossible scan target is admitted, not faked',
+    /readable|blur|larger, not smaller/i.test(scanText),
+    scanText.slice(0, 140).replace(/\n/g, ' '),
+  )
+
+  await page.locator('button:has-text("Save to device")').click()
+  await page.waitForTimeout(1500)
+  const savedScan = [...savedTo.entries()].find(([n]) => n.includes('scan'))
+  check('Compressed scan was saved', Boolean(savedScan), [...savedTo.keys()].join(', '))
+
+  if (savedScan) {
+    // Read the pixel size of the image actually placed on the page. This is
+    // the number that decides whether a reader can make out the words, and it
+    // is the number that was wrong: 268x379 for a whole A4 sheet.
+    const { PDFDocument: PDFDoc, PDFName } = await import('pdf-lib')
+    const outBytes = fs.readFileSync(savedScan[1])
+    const outDoc = await PDFDoc.load(outBytes, { ignoreEncryption: true })
+    const first = outDoc.getPage(0)
+    const xobjects = first.node.Resources()?.lookup(PDFName.of('XObject'))
+    let widest = 0
+    let tallest = 0
+    if (xobjects) {
+      for (const key of xobjects.keys()) {
+        const img = xobjects.lookup(key)
+        const w = img?.dict?.get(PDFName.of('Width'))?.asNumber?.()
+        const h = img?.dict?.get(PDFName.of('Height'))?.asNumber?.()
+        if (w && w > widest) widest = w
+        if (h && h > tallest) tallest = h
+      }
+    }
+    // An A4 page is 8.27in wide, so width in pixels / 8.27 is the DPI.
+    const dpi = widest / 8.27
+    console.log(`      scanned page rendered at ${widest}x${tallest} px (~${dpi.toFixed(0)} DPI)`)
+    check('Scanned text keeps a readable resolution', dpi >= 110, `${dpi.toFixed(0)} DPI at ${widest}x${tallest}`)
+  }
 
   // ---- Long text document: must bail out fast, not grind through 300 pages ----
   await openTool(page, 'compress-pdf')

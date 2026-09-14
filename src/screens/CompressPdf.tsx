@@ -229,7 +229,9 @@ export function CompressPdf() {
             heading={
               result.metTarget
                 ? 'Your PDF is ready'
-                : result.notWorthRasterising
+                : result.notWorthTheTime
+                  ? 'Not worth the wait'
+                  : result.notWorthRasterising
                   ? "This PDF can't get smaller"
                   : 'Made as small as possible'
             }
@@ -249,9 +251,13 @@ export function CompressPdf() {
             warning={
               result.metTarget
                 ? undefined
-                : result.notWorthRasterising
+                : result.notWorthTheTime
+                  ? `Re-encoding these ${result.copiedPages} pages would have taken about ${result.notWorthTheTime.minutes} minutes on this phone and saved only ${result.notWorthTheTime.savingPercent}%, so it was left alone. This file is already stored efficiently. To get a real reduction, split it into fewer pages and compress those.`
+                  : result.notWorthRasterising
                   ? `This PDF is mostly text and is already packed efficiently. Re-encoding its ${result.copiedPages} pages would have made it larger, not smaller, so it was left as it is. To get under ${formatBytes(targetBytes)}, split it into fewer pages instead.`
-                  : `This PDF couldn't go under ${formatBytes(targetBytes)} without becoming unreadable. Try a higher limit, or split it into fewer pages first.`
+                  : result.stoppedForLegibility
+                    ? `These pages are scans of text. Squeezing them under ${formatBytes(targetBytes)} would have meant dropping the resolution until the words blurred, so it stopped at ${formatBytes(result.finalBytes)} and kept them readable. To go smaller, split the document into fewer pages.`
+                    : `This PDF couldn't go under ${formatBytes(targetBytes)} without becoming unreadable. Try a higher limit, or split it into fewer pages first.`
             }
             onStartOver={reset}
             startOverLabel="Another PDF"
