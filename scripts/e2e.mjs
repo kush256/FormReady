@@ -85,25 +85,6 @@ async function main() {
   }
   check('Privacy footer intact', (await page.locator('text=Processed privately on your device').count()) > 0)
 
-  // ---- Smart Photo: impossible requirement is caught before any work ----
-  await openTool(page, 'smart-photo')
-  await page.waitForSelector('text=What does the form need?')
-  await page.locator('text=Custom requirement').click()
-  const nums = page.locator('input[inputmode="numeric"]')
-  await nums.nth(0).fill('3000')
-  await nums.nth(1).fill('4000')
-  await nums.nth(2).fill('20')
-  await page.waitForTimeout(200)
-  check("Impossible combo blocked up front", (await page.locator("text=isn't possible").count()) > 0)
-  const continueDisabled = await page.locator('button:has-text("Continue")').isDisabled()
-  check('Continue disabled while impossible', continueDisabled)
-  // one-tap fix offered
-  const fix = page.locator('button:has-text("Shrink to")')
-  check('Offers a shrink fix', (await fix.count()) > 0)
-  await fix.click()
-  await page.waitForTimeout(200)
-  check('Fix clears the error', (await page.locator("text=isn't possible").count()) === 0)
-
   // ---- Smart Photo: real run on a preset ----
   await openTool(page, 'smart-photo')
   await page.waitForSelector('text=What does the form need?')
@@ -171,13 +152,12 @@ async function main() {
   check('The rejection risk is spelled out', /may be rejected/i.test(plain))
 
   // ---- A result far under its limit is explained, not left looking broken ----
-  // 200x230 holds only so much detail. When the encoder is already at maximum,
+  // 413x531 holds only so much detail. When the encoder is already at maximum,
   // the unused allowance cannot be spent, and saying so is the difference
   // between a correct result and one that reads as a failure.
   await openTool(page, 'smart-photo')
   await page.waitForSelector('text=What does the form need?')
-  await page.locator('text=Custom requirement').click()
-  await page.locator('input[aria-label="Max KB"]').fill('100')
+  await page.locator('text=Passport size').click()
   await page.locator('button:has-text("Continue")').click()
   await page.waitForSelector('text=Add your photo')
   await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-plain.jpg`])
@@ -206,7 +186,7 @@ async function main() {
   async function openSizeFirst(page, fixture) {
     await openTool(page, 'smart-photo')
     await page.waitForSelector('text=What does the form need?')
-    await page.locator('text=Just make it smaller').click()
+    await page.locator('text=Custom requirement').click()
     await page.waitForSelector('text=Start with your photo')
     await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [fixture])
     await page.waitForSelector('text=Here is your photo')
@@ -222,6 +202,21 @@ async function main() {
     await page.locator('body').click()
     await page.waitForTimeout(150)
   }
+
+  // Count decodes. The first version decoded the file again for every probe,
+  // the ceiling check and the final render — five full decodes of a
+  // multi-megapixel JPEG in a couple of seconds. On a real phone that exhausted
+  // the WebView's memory, after which getContext('2d') returned null for
+  // everything and the app had to be force-stopped. It runs on every navigation,
+  // so the counter is per-run.
+  await page.addInitScript(() => {
+    const real = window.createImageBitmap
+    window.__decodes = 0
+    window.createImageBitmap = function (...args) {
+      window.__decodes++
+      return real.apply(this, args)
+    }
+  })
 
   await openSizeFirst(page, `${A}/test-photo-1.jpg`)
   check('Size-first asks for the photo before any numbers', (await page.locator('text=What does the form need?').count()) === 0)
@@ -250,6 +245,8 @@ async function main() {
 
   await page.locator('button:has-text("Make my photo")').click()
   await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  // Read the counter before the helper below adds a decode of its own.
+  const decodes = await page.evaluate(() => window.__decodes)
   const auto = await readPreparedPhoto(page)
   console.log(`      auto-sized to ${auto.width}×${auto.height} at ${(auto.bytes / 1024).toFixed(1)} KB of 100 KB`)
   check('Auto size stays inside the limit', auto.bytes <= 100 * 1024, `${(auto.bytes / 1024).toFixed(1)} KB`)
@@ -257,6 +254,7 @@ async function main() {
   check('Auto size actually spends the allowance', auto.bytes >= 70 * 1024, `${(auto.bytes / 1024).toFixed(1)} KB of 100 KB`)
   check('Auto size beats a guessed 200×230', auto.width * auto.height > 200 * 230 * 8, `${auto.width}×${auto.height}`)
   check('Auto size keeps the photo’s shape', Math.abs(auto.width / auto.height / (1600 / 1200) - 1) < 0.02, `${auto.width}×${auto.height}`)
+  check('The photo is decoded once, not once per measurement', decodes === 1, `${decodes} decodes for a full run`)
 
   // ---- Never enlarges ----
   await openSizeFirst(page, `${A}/test-photo-small.jpg`)

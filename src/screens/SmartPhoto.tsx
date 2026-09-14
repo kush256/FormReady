@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
@@ -22,19 +22,15 @@ import {
   releaseCanvas,
   type CropRect,
 } from '../lib/image'
-import {
-  describeRequirement,
-  explainMaxQuality,
-  validateRequirement,
-  type ImageRequirement,
-} from '../lib/requirements'
+import { describeRequirement, explainMaxQuality, type ImageRequirement } from '../lib/requirements'
 import { formatBytes, kbToBytes } from '../lib/format'
 import {
   assessPhoto,
+  preparePhoto,
   readPhotoFacts,
-  renderSized,
   type FitAssessment,
   type PhotoFacts,
+  type PreparedPhoto,
 } from '../lib/fit'
 
 interface Preset extends ImageRequirement {
@@ -96,13 +92,19 @@ export function SmartPhoto() {
   const [step, setStep] = useState<Step>(preset ? 'source' : 'requirement')
   const [presetIndex, setPresetIndex] = useState(0)
   const [mode, setMode] = useState<Mode>(preset ? 'custom' : 'preset')
-  const [custom, setCustom] = useState<ImageRequirement>(preset ?? { width: 200, height: 230, maxKb: 50 })
+  /** Only ever comes from an exam deep link now; the hand-typed card is gone. */
+  const [custom] = useState<ImageRequirement>(preset ?? { width: 200, height: 230, maxKb: 50 })
 
   // Size-first state. This arm keeps the File rather than a decoded image:
   // nothing is decoded at full size, and every render goes straight from the
   // file to the size actually wanted.
-  const [file, setFile] = useState<File | null>(null)
   const [facts, setFacts] = useState<PhotoFacts | null>(null)
+  /**
+   * The photo decoded once, reused by every measurement and the final render.
+   * Decoding per step is what ran the WebView out of memory on a real device,
+   * after which nothing could draw again until the app was restarted.
+   */
+  const photoRef = useRef<PreparedPhoto | null>(null)
   const [sourceUrl, setSourceUrl] = useState<string | null>(null)
   const [budgetBytes, setBudgetBytes] = useState(100 * 1024)
   const [useDims, setUseDims] = useState(false)
@@ -125,11 +127,20 @@ export function SmartPhoto() {
   /** The quality the encoder settled on, which says whether headroom is spendable. */
   const [resultQuality, setResultQuality] = useState(1)
 
+  // Leaving the screen must hand the decoded photo back, not wait for the
+  // collector to notice. On a phone that wait is the difference between the
+  // next photo working and the app having no memory left to draw with.
+  useEffect(() => {
+    return () => {
+      photoRef.current?.close()
+      photoRef.current = null
+    }
+  }, [])
+
   const target: ImageRequirement = mode === 'custom' ? custom : PRESETS[presetIndex]
   // A file under a stated floor is rejected as surely as one over the ceiling.
   const metMinimum = !target.minKb || !resultBlob || resultBlob.size >= kbToBytes(target.minKb)
   const aspect = useMemo(() => target.width / target.height, [target.width, target.height])
-  const issue = useMemo(() => (mode === 'custom' ? validateRequirement(custom) : null), [mode, custom])
 
   async function handlePicked(files: File[]) {
     const file = files[0]
@@ -157,14 +168,16 @@ export function SmartPhoto() {
     if (files.length) handlePicked(files)
   }
 
-  /** Size-first: keep the file, read what it is, and ask for a size. */
+  /** Size-first: decode the photo once, read what it is, and ask for a size. */
   async function handleSizePicked(files: File[]) {
     const picked = files[0]
     if (!picked) return
     try {
       setError(null)
       const found = await readPhotoFacts(picked)
-      setFile(picked)
+      const prepared = await preparePhoto(picked, found)
+      photoRef.current?.close()
+      photoRef.current = prepared
       setFacts(found)
       setSourceBytes(picked.size)
       setDims({ width: found.width, height: found.height })
@@ -195,36 +208,41 @@ export function SmartPhoto() {
    * pretending.
    */
   async function runCheck(nextBudget = budgetBytes, nextDims = dims, nextUseDims = useDims) {
-    if (!file || !facts) return
+    const photo = photoRef.current
+    if (!photo) return
     const run = ++checkRun.current
     setCheckFraction(0)
     setStep('sizeChecking')
     try {
       await nextFrame()
       const requested = nextUseDims ? { width: nextDims.width, height: nextDims.height } : null
-      const found = await assessPhoto(file, facts, nextBudget, requested, (fraction) => {
+      const found = await assessPhoto(photo, nextBudget, requested, (fraction) => {
         if (run === checkRun.current) setCheckFraction(fraction)
       })
       // The user moved on while this was running; its answer is stale.
       if (run !== checkRun.current) return
       setAssessment(found)
       setStep('sizeVerdict')
-    } catch {
+    } catch (e) {
       if (run !== checkRun.current) return
-      setError('Could not read that photo well enough to check it.')
+      // Name the actual failure. A generic sentence taught us nothing the first
+      // time this went wrong on a device we cannot reach.
+      setError(`Could not check that photo. ${e instanceof Error ? e.message : ''}`.trim())
       setStep('sizeTarget')
     }
   }
 
   /** Size-first: render at the measured dimensions, then spend any headroom on quality. */
   async function processSizeFirst() {
-    if (!file || !facts || !assessment) return
+    const photo = photoRef.current
+    if (!photo || !assessment) return
     setStage({ label: 'Resizing your photo', fraction: 0.05 })
     setStep('working')
     try {
       await nextFrame()
-      // The same call the measurement made, so the promise and the product match.
-      const canvas = await renderSized(file, facts.width, facts.height, assessment.width, assessment.height)
+      // The same photo and the same call the measurement used, so what was
+      // promised on the verdict screen is what actually gets made.
+      const canvas = photo.render(assessment.width, assessment.height)
 
       setStage({ label: 'Finding the best quality that fits', fraction: 0.2 })
       await nextFrame()
@@ -242,8 +260,8 @@ export function SmartPhoto() {
       setMetSize(result.metTarget)
       setResultQuality(result.quality)
       setStep('result')
-    } catch {
-      setError('Something went wrong while preparing the photo.')
+    } catch (e) {
+      setError(`Could not prepare that photo. ${e instanceof Error ? e.message : ''}`.trim())
       setStep('sizeVerdict')
     }
   }
@@ -289,6 +307,12 @@ export function SmartPhoto() {
     setResultUrl(null)
     setError(null)
     setAssessment(null)
+    photoRef.current?.close()
+    photoRef.current = null
+    setSourceUrl((previous) => {
+      if (previous) URL.revokeObjectURL(previous)
+      return null
+    })
     // Another photo, same job: size-first goes back to the picker, not to a
     // question the user already answered.
     setStep(preset ? 'source' : mode === 'sizeFirst' ? 'sizeSource' : 'requirement')
@@ -350,10 +374,10 @@ export function SmartPhoto() {
                 )
               })}
 
-              {/* Placed before the custom card: someone who does not know
-                  their numbers should meet this before a card demanding three
-                  of them. It has nothing to fill in, so it goes straight on
-                  rather than waiting for Continue. */}
+              {/* One card, not two. Typing width, height and a limit up front
+                  was asking for numbers most people do not have, and the
+                  measured flow below covers both cases: a size limit always,
+                  exact pixels only when the form names them. */}
               <button
                 onClick={() => {
                   setMode('sizeFirst')
@@ -362,102 +386,16 @@ export function SmartPhoto() {
                 className="flex w-full items-center justify-between gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-left transition-colors"
               >
                 <span className="min-w-0">
-                  <span className="block text-sm font-bold text-[var(--ink)]">Just make it smaller</span>
+                  <span className="block text-sm font-bold text-[var(--ink)]">Custom requirement</span>
                   <span className="block text-xs text-[var(--ink-2)]">
-                    You only know the KB limit — we work out the rest
+                    Just tell us the size limit — we work out the rest
                   </span>
                 </span>
                 <ChevronRightIcon width={18} height={18} className="shrink-0 text-[var(--ink-3)]" />
               </button>
-
-              <button
-                onClick={() => setMode('custom')}
-                className={`w-full rounded-2xl border p-4 text-left transition-colors ${
-                  mode === 'custom'
-                    ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
-                    : 'border-[var(--line)] bg-[var(--surface)]'
-                }`}
-              >
-                <span className="block text-sm font-bold text-[var(--ink)]">Custom requirement</span>
-                <span className="block text-xs text-[var(--ink-2)]">Type the exact numbers from the form</span>
-              </button>
             </div>
 
-            {mode === 'custom' && (
-              <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
-                <div className="grid grid-cols-3 gap-3">
-                  {(
-                    [
-                      ['Width', 'width'],
-                      ['Height', 'height'],
-                      ['Max KB', 'maxKb'],
-                    ] as const
-                  ).map(([label, key]) => (
-                    <label key={key}>
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                        {label}
-                      </span>
-                      <div className="mt-1">
-                        <NumberField
-                          value={custom[key]}
-                          min={key === 'maxKb' ? 1 : 20}
-                          invalid={!!issue}
-                          ariaLabel={label}
-                          onChange={(v) => setCustom({ ...custom, [key]: v })}
-                          className="px-2 text-sm"
-                        />
-                      </div>
-                    </label>
-                  ))}
-                </div>
-
-                {/* Many portals state a band. A file under the floor is rejected
-                    just as firmly as one over the ceiling, so it is worth asking. */}
-                <label className="mt-3 flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={custom.minKb !== undefined}
-                    onChange={(e) =>
-                      setCustom({ ...custom, minKb: e.target.checked ? 20 : undefined })
-                    }
-                    className="h-4 w-4 accent-[var(--accent)]"
-                  />
-                  <span className="text-sm text-[var(--ink-2)]">The form also states a minimum size</span>
-                </label>
-
-                {custom.minKb !== undefined && (
-                  <label className="mt-3 block">
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                      Min KB
-                    </span>
-                    <div className="mt-1 max-w-[7rem]">
-                      <NumberField
-                        value={custom.minKb}
-                        min={1}
-                        invalid={!!issue}
-                        ariaLabel="Min KB"
-                        onChange={(v) => setCustom({ ...custom, minKb: v })}
-                        className="px-2 text-sm"
-                      />
-                    </div>
-                  </label>
-                )}
-              </div>
-            )}
-
-            {issue && (
-              <Notice
-                title={issue.title}
-                actions={issue.fixes.map((fix) => ({
-                  label: fix.label,
-                  onClick: () => setCustom(fix.requirement),
-                }))}
-              >
-                {issue.detail}
-              </Notice>
-            )}
-
-            <Button fullWidth disabled={!!issue} onClick={() => setStep('source')}>
+            <Button fullWidth onClick={() => setStep('source')}>
               Continue
             </Button>
           </>
