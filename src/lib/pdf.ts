@@ -60,15 +60,87 @@ class OffscreenCanvasFactory {
 }
 
 /**
+ * Whether the filters this render asked for could not be honoured here.
+ *
+ * One pipeline runs per thread, so this is reset at every load rather than
+ * threaded through calibration, projection, assembly and refinement. Only the
+ * worker ever sets it: on the main thread pdf.js keeps its own factory, which
+ * has a document and builds the filters properly.
+ */
+const filters = { degraded: false }
+
+/**
+ * pdf.js builds a transfer map as `fn(i / 255) * 255 | 0`, so a function that
+ * does nothing lands back on `i`, give or take the truncation.
+ */
+function isIdentityMap(map: Uint8Array | null | undefined): boolean {
+  if (!map) return true
+  for (let i = 0; i < map.length; i++) {
+    if (Math.abs(map[i] - i) > 1) return false
+  }
+  return true
+}
+
+/**
+ * pdf.js's SVG filters, asked for where there is no document to build them in.
+ *
+ * Transfer functions and soft masks are applied by pointing `ctx.filter` at an
+ * SVG filter appended to the page. That needs a document, and in a worker
+ * pdf.js's own factory reaches for `document.URL` and throws — which is the
+ * "Cannot read properties of undefined (reading 'URL')" that stopped a 224-page
+ * scan on page 156, three-quarters of the way through a long job.
+ *
+ * This cannot build those filters either; `url(...)` does not resolve from a
+ * worker at all. What it can do is tell a filter that changes nothing from one
+ * that does. A transfer map that maps every value back to itself is what
+ * scanners leave behind routinely, and dropping it is exactly right. Anything
+ * with real effect sets `degraded`, and the job restarts on the main thread
+ * instead of quietly returning a page that renders wrong.
+ */
+class WorkerFilterFactory {
+  addFilter(maps?: (Uint8Array | null)[] | null) {
+    if (maps?.some((map) => !isIdentityMap(map))) filters.degraded = true
+    return 'none'
+  }
+
+  addAlphaFilter(map?: Uint8Array | null) {
+    if (!isIdentityMap(map)) filters.degraded = true
+    return 'none'
+  }
+
+  addLuminosityFilter() {
+    // No map to inspect our way out of: luminosity means "take the mask's
+    // brightness as its opacity", and without the filter the mask is applied by
+    // its alpha instead. A gradient becomes a hard edge.
+    filters.degraded = true
+    return 'none'
+  }
+
+  // Only ever asked for when page colours are forced, which this app does not do.
+  addHCMFilter() {
+    return 'none'
+  }
+
+  addHighlightHCMFilter() {
+    return 'none'
+  }
+
+  destroy() {}
+}
+
+/**
  * Always copies, on purpose: pdf.js detaches whatever buffer it is handed —
  * confirmed by testing, not assumed — and `bytes` here is `fallback`
  * throughout `compressPdf`, needed live for the whole run so a worse result
  * is never handed back. The copy is what keeps that buffer intact.
  */
 async function loadPdfJsDoc(bytes: Uint8Array) {
+  filters.degraded = false
   const loadingTask = pdfjsLib.getDocument({
     data: bytes.slice(),
-    ...(offscreenOnly ? { CanvasFactory: OffscreenCanvasFactory } : {}),
+    ...(offscreenOnly
+      ? { CanvasFactory: OffscreenCanvasFactory, FilterFactory: WorkerFilterFactory }
+      : {}),
   })
   return loadingTask.promise
 }
@@ -203,6 +275,10 @@ async function renderPageToCanvas(
     canvasContext: ctx as CanvasRenderingContext2D,
     viewport,
   }).promise
+  // Checked here because every render in this file goes through this function,
+  // and the page is worth abandoning the moment it is known to be wrong rather
+  // than at the end of a document that may still have hundreds of pages left.
+  if (filters.degraded) throw new PdfNeedsDomError()
   return canvas
 }
 
@@ -372,6 +448,22 @@ export class PdfDamagedError extends Error {
   }
 }
 
+/**
+ * Not a failure: this document needs a document to render faithfully.
+ *
+ * Raised inside the worker when a page turns out to use a transfer function or
+ * a soft mask with real effect, which a worker cannot apply. The client catches
+ * it and runs the whole job again on the main thread, so the user never sees
+ * this text — they get the right file, more slowly, and only for the few
+ * documents that actually need it.
+ */
+export class PdfNeedsDomError extends Error {
+  constructor() {
+    super('This PDF needs to be rendered on the main thread.')
+    this.name = 'PdfNeedsDomError'
+  }
+}
+
 const OUT_OF_MEMORY = /out of memory|allocation failed|array buffer allocation/i
 
 /**
@@ -383,6 +475,8 @@ const OUT_OF_MEMORY = /out of memory|allocation failed|array buffer allocation/i
  */
 function classifyFailure(e: unknown, context?: string): Error {
   if (isCancellation(e)) return e as Error
+  // A routing decision, not a diagnosis: it must reach the client intact.
+  if (e instanceof PdfNeedsDomError) return e
   // PasswordException is not part of pdfjs-dist's public d.ts, unlike
   // InvalidPDFException, so it is told apart by the name pdf.js itself gives
   // it rather than by instanceof.
@@ -763,7 +857,7 @@ export async function compressPdf(
           })
           if (retry.byteLength < best.byteLength) best = retry
         } catch (e) {
-          if (isCancellation(e)) throw e
+          if (isCancellation(e) || e instanceof PdfNeedsDomError) throw e
           // Keep the first pass rather than failing the whole job.
         }
       }

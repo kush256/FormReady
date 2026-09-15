@@ -1,5 +1,11 @@
 /// <reference lib="webworker" />
-import { compressPdf, isCancellation, type CompressPdfResult, type CompressProgress } from './pdf'
+import {
+  compressPdf,
+  isCancellation,
+  PdfNeedsDomError,
+  type CompressPdfResult,
+  type CompressProgress,
+} from './pdf'
 
 /**
  * Compression, off the main thread.
@@ -26,6 +32,11 @@ export type FromWorker =
   | { kind: 'progress'; progress: CompressProgress }
   | { kind: 'done'; bytes: ArrayBuffer; summary: CompressSummary }
   | { kind: 'cancelled' }
+  // This document uses a transfer function or a soft mask, which needs a
+  // document to render faithfully and so cannot be finished here. The input is
+  // handed back with it so the client can start again on the main thread
+  // without having kept a second copy of the file alive throughout.
+  | { kind: 'needsDom'; bytes: ArrayBuffer }
   // The name of whichever error class pdf.ts raised — PdfTooLargeError,
   // PdfPasswordError, PdfDamagedError, or the generic PdfCompressionError —
   // so the screen can rebuild the right one instead of collapsing every
@@ -44,9 +55,13 @@ scope.onmessage = async (event: MessageEvent<ToWorker>) => {
   }
 
   controller = new AbortController()
+  // Kept, rather than passed straight in: `compressPdf` copies before pdf.js
+  // detaches anything, so this stays valid and can be handed back if the job
+  // turns out to need the main thread.
+  const input = new Uint8Array(message.bytes)
   try {
     const { bytes, ...summary } = await compressPdf(
-      new Uint8Array(message.bytes),
+      input,
       message.maxBytes,
       {
         signal: controller.signal,
@@ -64,6 +79,11 @@ scope.onmessage = async (event: MessageEvent<ToWorker>) => {
   } catch (e) {
     if (isCancellation(e)) {
       scope.postMessage({ kind: 'cancelled' } satisfies FromWorker)
+      return
+    }
+    if (e instanceof PdfNeedsDomError) {
+      const back = input.buffer as ArrayBuffer
+      scope.postMessage({ kind: 'needsDom', bytes: back } satisfies FromWorker, [back])
       return
     }
     scope.postMessage({

@@ -709,6 +709,57 @@ async function main() {
   const corruptText = await page.locator('main').innerText()
   check('A damaged PDF names the damage, not the size', /damaged|could not be read/i.test(corruptText) && !/too large/i.test(corruptText), corruptText.slice(0, 90).replace(/\n/g, ' '))
 
+  // ---- Filters a worker cannot build ----
+  // pdf.js applies transfer functions and soft masks by pointing the canvas at
+  // an SVG filter it appends to the document. A worker has no document, so it
+  // reached for `document.URL` and threw — which is what stopped a 224-page
+  // scan three-quarters of the way through, and got reported as the file being
+  // too large. A filter with real effect now goes back to the main thread; one
+  // that computes identity, as scanners leave behind, is simply dropped.
+  const workerLog = []
+  page.on('worker', (w) => {
+    const name = w.url().split('/').pop() ?? ''
+    workerLog.push(`start ${name}`)
+    w.on('close', () => workerLog.push(`close ${name}`))
+  })
+
+  async function compressAndWatch(file) {
+    workerLog.length = 0
+    await openTool(page, 'compress-pdf')
+    await page.waitForSelector('text=Reduce PDF size')
+    await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/${file}`])
+    await page.waitForSelector('text=Maximum size', { timeout: 15000 })
+    await page.locator('input[inputmode="numeric"]').first().fill('150')
+    await page.locator('button:has-text("KB")').first().click()
+    await page.locator('button:has-text("Compress PDF")').click()
+    await page.waitForSelector('text=Your PDF is ready', { timeout: 120000 }).catch(() => {})
+    const text = await page.locator('main').innerText()
+    const closed = workerLog.findIndex((e) => e.startsWith('close compress.worker'))
+    const onMain = workerLog.findIndex((e, i) => i > closed && e.startsWith('start pdf.worker'))
+    return { text, closed, onMain }
+  }
+
+  const withFilters = await compressAndWatch('test-doc-filters.pdf')
+  check(
+    'A transfer function no longer stops the job partway through',
+    /Your PDF is ready/.test(withFilters.text) && !/URL/.test(withFilters.text),
+    withFilters.text.slice(0, 90).replace(/\n/g, ' '),
+  )
+  // pdf.js's own worker appearing after ours closes is the main thread taking
+  // the job over — the only place these filters can actually be built.
+  check(
+    'A filter with real effect is finished on the main thread, not faked',
+    withFilters.closed >= 0 && withFilters.onMain > withFilters.closed,
+    workerLog.join(' | ') || 'no workers',
+  )
+
+  const identityTr = await compressAndWatch('test-doc-identity-tr.pdf')
+  check(
+    'A transfer function that changes nothing stays in the worker',
+    /Your PDF is ready/.test(identityTr.text) && identityTr.closed >= 0 && identityTr.onMain === -1,
+    workerLog.join(' | ') || 'no workers',
+  )
+
   // ---- Tight target: the reported "restarted at zero" case ----
   // A limit the first pass cannot reach on its own used to trigger a second
   // render of every page, which reset the page counter to 1 and, on a phone,

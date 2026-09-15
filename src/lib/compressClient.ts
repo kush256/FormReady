@@ -14,8 +14,12 @@ import type { FromWorker, ToWorker } from './compress.worker'
 export interface RunningCompression {
   result: Promise<CompressPdfResult>
   cancel: () => void
-  /** False when this fell back to the main thread, where backgrounding stalls. */
-  inWorker: boolean
+}
+
+function cancelled(): Error {
+  const aborted = new Error('Compression was cancelled.')
+  aborted.name = 'AbortError'
+  return aborted
 }
 
 function workerUsable(): boolean {
@@ -33,13 +37,17 @@ export function runCompression(
   if (!workerUsable()) {
     const controller = new AbortController()
     return {
-      inWorker: false,
       cancel: () => controller.abort(),
       result: compressPdf(bytes, maxBytes, { signal: controller.signal, onProgress }),
     }
   }
 
   const worker = new Worker(new URL('./compress.worker.ts', import.meta.url), { type: 'module' })
+
+  // Set only if the job comes back for the main thread, which is where cancel
+  // has to point from then on.
+  let onMainThread: AbortController | null = null
+  let stopped = false
 
   const result = new Promise<CompressPdfResult>((resolve, reject) => {
     worker.onmessage = (event: MessageEvent<FromWorker>) => {
@@ -52,11 +60,27 @@ export function runCompression(
           resolve({ ...message.summary, bytes: new Uint8Array(message.bytes) })
           worker.terminate()
           return
-        case 'cancelled': {
-          const aborted = new Error('Compression was cancelled.')
-          aborted.name = 'AbortError'
-          reject(aborted)
+        case 'cancelled':
+          reject(cancelled())
           worker.terminate()
+          return
+        case 'needsDom': {
+          // A transfer function or a soft mask the worker cannot apply. Rather
+          // than hand back a page that renders wrong, start again here, where
+          // pdf.js has a document and builds its filters properly. It costs the
+          // work done so far and the job now stalls if the app is backgrounded
+          // — but it is the only way this document comes out right, and almost
+          // none of them need it.
+          worker.terminate()
+          if (stopped) {
+            reject(cancelled())
+            return
+          }
+          onMainThread = new AbortController()
+          compressPdf(new Uint8Array(message.bytes), maxBytes, {
+            signal: onMainThread.signal,
+            onProgress,
+          }).then(resolve, reject)
           return
         }
         case 'failed': {
@@ -88,8 +112,11 @@ export function runCompression(
   worker.postMessage(start, [buffer])
 
   return {
-    inWorker: true,
-    cancel: () => worker.postMessage({ kind: 'cancel' } satisfies ToWorker),
+    cancel: () => {
+      stopped = true
+      if (onMainThread) onMainThread.abort()
+      else worker.postMessage({ kind: 'cancel' } satisfies ToWorker)
+    },
     result,
   }
 }

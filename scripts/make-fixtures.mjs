@@ -5,7 +5,15 @@
  *   node scripts/make-fixtures.mjs
  */
 import { chromium } from 'playwright'
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import {
+  PDFDocument,
+  PDFName,
+  StandardFonts,
+  popGraphicsState,
+  pushGraphicsState,
+  rgb,
+  setGraphicsState,
+} from 'pdf-lib'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -354,6 +362,99 @@ async function scannedPdf(name, pages) {
   console.log('wrote', name, (bytes.byteLength / 1024).toFixed(0), 'KB', `(${pages} scanned pages)`)
 }
 
+/**
+ * A scan where one page carries a transfer function, and one a soft mask.
+ *
+ * Both are ordinary things for a scanner or a design tool to leave behind, and
+ * both make pdf.js ask its filter factory for an SVG filter — which is the one
+ * thing a worker, having no document, cannot produce. This is the shape of the
+ * file that failed on page 156 of 224: unremarkable everywhere else.
+ */
+async function filterPdf(name, pages, { trPage, smaskPage = -1, exponent = 2 }) {
+  const doc = await PDFDocument.create()
+
+  // pdf.js drops a transfer function named /Identity before it ever reaches the
+  // filter factory, but not one spelled out as a function — so `exponent: 1` is
+  // a curve that computes identity the long way, which is what a scanner leaves
+  // behind, and `exponent: 2` is a gamma curve that really does change the page.
+  const curve = doc.context.register(
+    doc.context.obj({ FunctionType: 2, Domain: [0, 1], C0: [0], C1: [1], N: exponent }),
+  )
+  const trState = doc.context.register(doc.context.obj({ Type: 'ExtGState', TR: curve }))
+
+  // A luminosity mask: a grey form, so the page under it is half faded.
+  const maskContent = doc.context.stream('0.5 g 0 0 595 842 re f')
+  const maskForm = doc.context.register(
+    doc.context.obj({
+      Type: 'XObject',
+      Subtype: 'Form',
+      BBox: [0, 0, 595, 842],
+      Group: { Type: 'Group', S: 'Transparency', CS: 'DeviceGray' },
+      Length: maskContent.getContentsSize(),
+    }),
+  )
+  doc.context.assign(maskForm, maskContent)
+  const smaskState = doc.context.register(
+    doc.context.obj({
+      Type: 'ExtGState',
+      SMask: { Type: 'Mask', S: 'Luminosity', G: maskForm },
+    }),
+  )
+
+  for (let i = 0; i < pages; i++) {
+    // Photographic, and different on every page, so rasterising is plainly
+    // worth it and the compressor renders rather than copying the file through.
+    const dataUrl = await page.evaluate(
+      ({ seed }) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1000
+        canvas.height = 1400
+        const ctx = canvas.getContext('2d')
+        const image = ctx.createImageData(canvas.width, canvas.height)
+        const data = image.data
+        let state = seed * 2654435761
+        for (let p = 0; p < data.length; p += 4) {
+          state = (state * 1103515245 + 12345) & 0x7fffffff
+          data[p] = state & 0xff
+          data[p + 1] = (state >> 8) & 0xff
+          data[p + 2] = (state >> 16) & 0xff
+          data[p + 3] = 255
+        }
+        ctx.putImageData(image, 0, 0)
+        ctx.filter = 'blur(1.5px)'
+        ctx.drawImage(canvas, 0, 0)
+        ctx.filter = 'none'
+        return canvas.toDataURL('image/jpeg', 0.82)
+      },
+      { seed: i + 1 },
+    )
+    const image = await doc.embedJpg(Buffer.from(dataUrl.split(',')[1], 'base64'))
+
+    const pg = doc.addPage([595, 842])
+    if (i === trPage) {
+      pg.node.setExtGState(PDFName.of('FrTr'), trState)
+      pg.pushOperators(pushGraphicsState(), setGraphicsState('FrTr'))
+    } else if (i === smaskPage) {
+      pg.node.setExtGState(PDFName.of('FrSm'), smaskState)
+      pg.pushOperators(pushGraphicsState(), setGraphicsState('FrSm'))
+    }
+    pg.drawImage(image, { x: 0, y: 0, width: 595, height: 842 })
+    if (i === trPage || i === smaskPage) pg.pushOperators(popGraphicsState())
+  }
+
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log(
+    'wrote',
+    name,
+    (bytes.byteLength / 1024).toFixed(0),
+    'KB',
+    `(${pages} pages; transfer function on ${trPage + 1}${smaskPage >= 0 ? `, soft mask on ${smaskPage + 1}` : ''})`,
+  )
+}
+
+await filterPdf('test-doc-filters.pdf', 6, { trPage: 3, smaskPage: 4 })
+await filterPdf('test-doc-identity-tr.pdf', 4, { trPage: 2, exponent: 1 })
 await scannedPdf('test-doc-scan.pdf', 10)
 await hugePdf('test-doc-huge.pdf', 41)
 
