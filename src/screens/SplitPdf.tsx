@@ -141,19 +141,58 @@ export function SplitPdf() {
     <div className="flex min-h-screen flex-col">
       <ScreenHeader title="Split PDF">
         {step === 'select' && (
-          // Pinned, because on a 300-page document everything below scrolls
-          // out of reach: the count, the way to start over, and the button
-          // that finishes the job.
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-bold text-[var(--ink)]">
-              {selected.size} of {pageCount} selected
-            </p>
-            <div className="flex gap-3 text-xs font-medium text-[var(--accent)]">
-              <button onClick={() => setSelected(new Set(Array.from({ length: pageCount }, (_, i) => i)))}>
-                All
-              </button>
-              <button onClick={() => setSelected(new Set())}>None</button>
+          // Everything needed to drive the list is pinned: on a 615-page book
+          // the count, the reset, and the field that selects without scrolling
+          // are the whole interface. The uppercase caption the app's other
+          // fields carry is dropped here on purpose — sticky chrome costs list
+          // space on every screenful, and the placeholder says the same thing.
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-bold text-[var(--ink)]">
+                {selected.size} of {pageCount} selected
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSelected(new Set(Array.from({ length: pageCount }, (_, i) => i)))}
+                  className="rounded-full border border-[var(--line-strong)] bg-[var(--surface-sunk)] px-3 py-1 text-xs font-semibold text-[var(--accent)] active:bg-[var(--accent-soft)]"
+                >
+                  All
+                </button>
+                <button
+                  onClick={() => setSelected(new Set())}
+                  className="rounded-full border border-[var(--line-strong)] bg-[var(--surface-sunk)] px-3 py-1 text-xs font-semibold text-[var(--accent)] active:bg-[var(--accent-soft)]"
+                >
+                  None
+                </button>
+              </div>
             </div>
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="e.g. 1-3, 5"
+                value={rangeInput}
+                aria-label="Pages to select, by number"
+                aria-invalid={rangeError ? 'true' : 'false'}
+                onChange={(e) => {
+                  setRangeInput(e.target.value)
+                  setRangeError(null)
+                }}
+                // The keyboard's own Go key did nothing, so every range meant
+                // typing, dismissing the keyboard, then finding Apply.
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') applyRange()
+                }}
+                className="fr-field flex-1 py-1.5 text-sm"
+              />
+              <Button variant="secondary" onClick={applyRange}>
+                Apply
+              </Button>
+            </div>
+
+            {rangeError && (
+              <p className="text-xs leading-relaxed text-[var(--danger)]">{rangeError}</p>
+            )}
           </div>
         )}
       </ScreenHeader>
@@ -182,32 +221,6 @@ export function SplitPdf() {
 
         {step === 'select' && (
           <>
-            <div>
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                Pick pages by number
-              </span>
-              <div className="mt-1.5 flex gap-2">
-                <input
-                  type="text"
-                  placeholder="e.g. 1-3, 5"
-                  value={rangeInput}
-                  aria-label="Pages to select, by number"
-                  aria-invalid={rangeError ? 'true' : 'false'}
-                  onChange={(e) => {
-                    setRangeInput(e.target.value)
-                    setRangeError(null)
-                  }}
-                  className="fr-field flex-1"
-                />
-                <Button variant="secondary" onClick={applyRange}>
-                  Apply
-                </Button>
-              </div>
-              {rangeError && (
-                <p className="mt-1.5 text-xs leading-relaxed text-[var(--danger)]">{rangeError}</p>
-              )}
-            </div>
-
             <div className="grid grid-cols-3 gap-3">
               {pages &&
                 Array.from({ length: pageCount }, (_, i) => (
@@ -219,7 +232,9 @@ export function SplitPdf() {
                 page already dealt with. */}
             <div className="safe-bottom sticky bottom-0 -mx-5 border-t border-[var(--line)] bg-[var(--bg)]/92 px-5 pb-3 pt-3 backdrop-blur">
               <Button fullWidth disabled={selected.size === 0} onClick={generate}>
-                Extract {selected.size} page{selected.size !== 1 ? 's' : ''}
+                {selected.size === 0
+                  ? 'Select pages to extract'
+                  : `Extract ${selected.size} page${selected.size !== 1 ? 's' : ''}`}
               </Button>
             </div>
           </>

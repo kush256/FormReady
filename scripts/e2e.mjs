@@ -457,6 +457,12 @@ async function main() {
     countBox ? `y=${Math.round(countBox.y)} of ${view.height}` : 'not rendered',
   )
   check('And so do All and None', (await page.locator('header button:has-text("None")').count()) === 1)
+  const fieldBox = await page.locator('input[aria-label="Pages to select, by number"]').boundingBox()
+  check(
+    'The page-number field stays on screen too',
+    fieldBox !== null && fieldBox.y >= 0 && fieldBox.y < view.height,
+    fieldBox ? `y=${Math.round(fieldBox.y)} of ${view.height}` : 'not rendered',
+  )
   const extractBox = await page.locator('button:has-text("Extract")').boundingBox()
   check(
     'The extract button is reachable without scrolling to the end',
@@ -469,7 +475,7 @@ async function main() {
   await page.locator('input[aria-label="Pages to select, by number"]').fill('abc')
   await page.locator('button:has-text("Apply")').click()
   await page.waitForTimeout(250)
-  const badText = await page.locator('main').innerText()
+  const badText = await page.locator('header').innerText()
   check('An unreadable range is reported', /couldn't find/i.test(badText), badText.slice(0, 70).replace(/\n/g, ' '))
   check(
     'And it changes nothing behind the user’s back',
@@ -480,12 +486,13 @@ async function main() {
   await page.locator('input[aria-label="Pages to select, by number"]').fill('900')
   await page.locator('button:has-text("Apply")').click()
   await page.waitForTimeout(250)
-  check('A page past the end is caught too', /couldn't find/i.test(await page.locator('main').innerText()))
+  check('A page past the end is caught too', /couldn't find/i.test(await page.locator('header').innerText()))
 
+  // The keyboard's Go key used to do nothing at all.
   await page.locator('input[aria-label="Pages to select, by number"]').fill('5-7')
-  await page.locator('button:has-text("Apply")').click()
+  await page.locator('input[aria-label="Pages to select, by number"]').press('Enter')
   await page.waitForSelector('text=3 of 300 selected')
-  check('A range it can read still applies', true)
+  check('Enter applies the range, not just the Apply button', true)
   // The selected state has to carry across the whole tile: a 2px border on a
   // white page is slow to read in a grid of forty.
   const wash = await page.evaluate(() => {
