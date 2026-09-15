@@ -75,11 +75,16 @@ export function PageThumb({ index, source, selected, onToggle }: Props) {
           {index + 1}
         </span>
       )}
+      {/* A page is mostly white whatever is printed on it, so a 2px border on
+          its own reads slowly in a grid of forty. The wash carries the state
+          across the whole tile, which is what makes it legible while
+          scrolling rather than only on close inspection. */}
+      {selected && <span className="pointer-events-none absolute inset-0 bg-[var(--accent)]/20" />}
       <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
         {index + 1}
       </span>
       {selected && (
-        <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] text-white">
+        <span className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-[var(--accent)] text-[11px] font-bold text-white shadow-sm">
           ✓
         </span>
       )}

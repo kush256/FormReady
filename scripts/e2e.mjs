@@ -443,9 +443,68 @@ async function main() {
     renderedThumbs > 0 && renderedThumbs < 60,
     `${renderedThumbs} images`,
   )
-  await page.locator('input[placeholder*="1-3"]').fill('5-7')
+  // ---- On a long document the controls stay reachable ----
+  // Everything below the grid used to scroll away with it: the count, the way
+  // to start over, and the button that finishes the job — which on 300 pages
+  // sat a hundred rows down, past every page already dealt with.
+  await page.mouse.wheel(0, 9000)
+  await page.waitForTimeout(400)
+  const view = page.viewportSize()
+  const countBox = await page.locator('header p:has-text("selected")').boundingBox()
+  check(
+    'The selection count stays on screen while the grid scrolls',
+    countBox !== null && countBox.y >= 0 && countBox.y < view.height,
+    countBox ? `y=${Math.round(countBox.y)} of ${view.height}` : 'not rendered',
+  )
+  check('And so do All and None', (await page.locator('header button:has-text("None")').count()) === 1)
+  const extractBox = await page.locator('button:has-text("Extract")').boundingBox()
+  check(
+    'The extract button is reachable without scrolling to the end',
+    extractBox !== null && extractBox.y >= 0 && extractBox.y + extractBox.height <= view.height + 4,
+    extractBox ? `y=${Math.round(extractBox.y)} of ${view.height}` : 'not rendered',
+  )
+
+  // ---- A range it cannot read says so, instead of silently selecting nothing ----
+  const beforeBad = await page.locator('header p:has-text("selected")').innerText()
+  await page.locator('input[aria-label="Pages to select, by number"]').fill('abc')
+  await page.locator('button:has-text("Apply")').click()
+  await page.waitForTimeout(250)
+  const badText = await page.locator('main').innerText()
+  check('An unreadable range is reported', /couldn't find/i.test(badText), badText.slice(0, 70).replace(/\n/g, ' '))
+  check(
+    'And it changes nothing behind the user’s back',
+    (await page.locator('header p:has-text("selected")').innerText()) === beforeBad,
+    beforeBad,
+  )
+  // a page past the end of the document is the same mistake
+  await page.locator('input[aria-label="Pages to select, by number"]').fill('900')
+  await page.locator('button:has-text("Apply")').click()
+  await page.waitForTimeout(250)
+  check('A page past the end is caught too', /couldn't find/i.test(await page.locator('main').innerText()))
+
+  await page.locator('input[aria-label="Pages to select, by number"]').fill('5-7')
   await page.locator('button:has-text("Apply")').click()
   await page.waitForSelector('text=3 of 300 selected')
+  check('A range it can read still applies', true)
+  // The selected state has to carry across the whole tile: a 2px border on a
+  // white page is slow to read in a grid of forty.
+  const wash = await page.evaluate(() => {
+    // A translucent colour can come back as rgba() or, from a CSS variable, as
+    // oklab(… / 0.2). Read the alpha off either rather than the notation.
+    const alphaOf = (el) => {
+      const m = getComputedStyle(el).backgroundColor.match(/[/,]\s*(0?\.\d+)\s*\)\s*$/)
+      return m ? parseFloat(m[1]) : null
+    }
+    const covering = (button) =>
+      [...button.querySelectorAll('span')].some(
+        (el) => el.clientWidth > 30 && el.clientHeight > 30 && (alphaOf(el) ?? 0) > 0,
+      )
+    const on = document.querySelector('main .grid button[aria-pressed="true"]')
+    const off = document.querySelector('main .grid button[aria-pressed="false"]')
+    return { on: on ? covering(on) : null, off: off ? covering(off) : null }
+  })
+  check('A selected page is washed, not just outlined', wash.on === true, JSON.stringify(wash))
+  check('An unselected one is not', wash.off === false, JSON.stringify(wash))
   await page.locator('button:has-text("Extract 3 pages")').click()
   await page.waitForSelector('text=Your PDF is ready', { timeout: 30000 })
   check('Split works on a long document', (await page.locator('main').innerText()).includes('3 pages'))

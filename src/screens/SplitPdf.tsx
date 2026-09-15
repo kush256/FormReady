@@ -13,8 +13,15 @@ import { SplitIllustration } from '../components/Illustrations'
 
 type Step = 'pick' | 'loading' | 'select' | 'processing' | 'result'
 
-function parseRange(input: string, pageCount: number): Set<number> {
-  const result = new Set<number>()
+interface ParsedRange {
+  pages: Set<number>
+  /** Anything typed that named no page in this document, kept for the message. */
+  bad: string[]
+}
+
+function parseRange(input: string, pageCount: number): ParsedRange {
+  const pages = new Set<number>()
+  const bad: string[] = []
   for (const part of input.split(',')) {
     const trimmed = part.trim()
     if (!trimmed) continue
@@ -22,13 +29,17 @@ function parseRange(input: string, pageCount: number): Set<number> {
     if (rangeMatch) {
       const start = Math.max(1, parseInt(rangeMatch[1], 10))
       const end = Math.min(pageCount, parseInt(rangeMatch[2], 10))
-      for (let i = start; i <= end; i++) result.add(i - 1)
+      // A range wholly outside the document selects nothing, and silently
+      // selecting nothing is what made a typo impossible to notice.
+      if (start > end) bad.push(trimmed)
+      for (let i = start; i <= end; i++) pages.add(i - 1)
     } else {
       const n = parseInt(trimmed, 10)
-      if (n >= 1 && n <= pageCount) result.add(n - 1)
+      if (n >= 1 && n <= pageCount) pages.add(n - 1)
+      else bad.push(trimmed)
     }
   }
-  return result
+  return { pages, bad }
 }
 
 export function SplitPdf() {
@@ -39,6 +50,8 @@ export function SplitPdf() {
   const pageCount = pages?.pageCount ?? 0
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [rangeInput, setRangeInput] = useState('')
+  /** Sits under the field itself: a typo needs answering where it was typed. */
+  const [rangeError, setRangeError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
 
@@ -78,8 +91,21 @@ export function SplitPdf() {
   }
 
   function applyRange() {
-    if (!rangeInput.trim()) return
-    setSelected(parseRange(rangeInput, pageCount))
+    if (!rangeInput.trim()) {
+      setRangeError(`Type the pages you want, like 1-3, 5.`)
+      return
+    }
+    const { pages, bad } = parseRange(rangeInput, pageCount)
+    if (pages.size === 0) {
+      setRangeError(
+        `Couldn't find ${bad.length === 1 ? `page ${bad[0]}` : 'those pages'} in a ${pageCount}-page document.`,
+      )
+      return
+    }
+    // Some of it worked: apply that much, and name what was dropped rather
+    // than letting the count quietly disagree with what was typed.
+    setRangeError(bad.length ? `Selected ${pages.size}. Ignored ${bad.join(', ')}.` : null)
+    setSelected(pages)
   }
 
   async function generate() {
@@ -105,6 +131,7 @@ export function SplitPdf() {
     setPages(null)
     setSelected(new Set())
     setRangeInput('')
+    setRangeError(null)
     setResultBlob(null)
     setError(null)
     setStep('pick')
@@ -112,7 +139,24 @@ export function SplitPdf() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <ScreenHeader title="Split PDF" />
+      <ScreenHeader title="Split PDF">
+        {step === 'select' && (
+          // Pinned, because on a 300-page document everything below scrolls
+          // out of reach: the count, the way to start over, and the button
+          // that finishes the job.
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-bold text-[var(--ink)]">
+              {selected.size} of {pageCount} selected
+            </p>
+            <div className="flex gap-3 text-xs font-medium text-[var(--accent)]">
+              <button onClick={() => setSelected(new Set(Array.from({ length: pageCount }, (_, i) => i)))}>
+                All
+              </button>
+              <button onClick={() => setSelected(new Set())}>None</button>
+            </div>
+          </div>
+        )}
+      </ScreenHeader>
 
       <main className="flex-1 space-y-5 px-5 py-4">
         {error && (
@@ -138,25 +182,30 @@ export function SplitPdf() {
 
         {step === 'select' && (
           <>
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-[var(--ink)]">{selected.size} of {pageCount} selected</h2>
-              <div className="flex gap-3 text-xs font-medium text-[var(--accent)]">
-                <button onClick={() => setSelected(new Set(Array.from({ length: pageCount }, (_, i) => i)))}>All</button>
-                <button onClick={() => setSelected(new Set())}>None</button>
+            <div>
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
+                Pick pages by number
+              </span>
+              <div className="mt-1.5 flex gap-2">
+                <input
+                  type="text"
+                  placeholder="e.g. 1-3, 5"
+                  value={rangeInput}
+                  aria-label="Pages to select, by number"
+                  aria-invalid={rangeError ? 'true' : 'false'}
+                  onChange={(e) => {
+                    setRangeInput(e.target.value)
+                    setRangeError(null)
+                  }}
+                  className="fr-field flex-1"
+                />
+                <Button variant="secondary" onClick={applyRange}>
+                  Apply
+                </Button>
               </div>
-            </div>
-
-            <div className="flex gap-2">
-              <input
-                type="text"
-                placeholder="e.g. 1-3, 5"
-                value={rangeInput}
-                onChange={(e) => setRangeInput(e.target.value)}
-                className="flex-1 rounded-lg border border-[var(--line)] px-3 py-2 text-sm"
-              />
-              <Button variant="secondary" onClick={applyRange}>
-                Apply
-              </Button>
+              {rangeError && (
+                <p className="mt-1.5 text-xs leading-relaxed text-[var(--danger)]">{rangeError}</p>
+              )}
             </div>
 
             <div className="grid grid-cols-3 gap-3">
@@ -166,9 +215,13 @@ export function SplitPdf() {
                 ))}
             </div>
 
-            <Button fullWidth disabled={selected.size === 0} onClick={generate}>
-              Extract {selected.size} page{selected.size !== 1 ? 's' : ''}
-            </Button>
+            {/* Sticky, so finishing never means scrolling back past every
+                page already dealt with. */}
+            <div className="safe-bottom sticky bottom-0 -mx-5 border-t border-[var(--line)] bg-[var(--bg)]/92 px-5 pb-3 pt-3 backdrop-blur">
+              <Button fullWidth disabled={selected.size === 0} onClick={generate}>
+                Extract {selected.size} page{selected.size !== 1 ? 's' : ''}
+              </Button>
+            </div>
           </>
         )}
 
