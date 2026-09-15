@@ -1,0 +1,65 @@
+name: Android Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install web dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit -p tsconfig.app.json
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # The action installs "tools platform-tools" by default, and Google has
+          # removed the legacy "tools" package from the SDK repository, so
+          # sdkmanager now exits 1 on it and takes the whole job with it. Gradle
+          # installs whatever build-tools and platform the project needs itself.
+          packages: platform-tools
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Generate debug keystore
+        run: |
+          keytool -genkeypair -v -keystore android/debug.keystore \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: formready-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
