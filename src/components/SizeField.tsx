@@ -8,6 +8,8 @@ interface Props {
   bytes: number
   onChange: (bytes: number) => void
   invalid?: boolean
+  /** Distinguishes two size fields on one screen, for screen readers and tests. */
+  label?: string
 }
 
 /**
@@ -15,7 +17,7 @@ interface Props {
  * and asking someone to convert "5 MB" into 5120 by hand is a good way to get
  * a wrong number typed.
  */
-export function SizeField({ bytes, onChange, invalid }: Props) {
+export function SizeField({ bytes, onChange, invalid, label = 'Maximum size' }: Props) {
   const [unit, setUnit] = useState<'KB' | 'MB'>(bytes >= MB ? 'MB' : 'KB')
   const divisor = unit === 'MB' ? MB : KB
   const shown = Math.round((bytes / divisor) * 100) / 100
@@ -32,7 +34,7 @@ export function SizeField({ bytes, onChange, invalid }: Props) {
         min={0}
         decimals={unit === 'MB'}
         invalid={invalid}
-        ariaLabel={`Maximum size in ${unit}`}
+        ariaLabel={`${label} in ${unit}`}
         className="flex-1"
       />
       <div className="flex overflow-hidden rounded-[10px] border border-[var(--line-strong)]">

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
 import { ChevronRightIcon, SearchIcon } from '../components/Icons'
-import { EXAMS, searchExams } from '../lib/exams'
+import { EXAMS, searchExams, SPECS_CHECKED } from '../lib/exams'
 import { EmptyState } from '../components/EmptyState'
 import { Button } from '../components/Button'
 import { SearchEmptyIllustration } from '../components/Illustrations'
@@ -118,8 +118,8 @@ export function GovExams() {
         )}
 
         <p className="text-xs leading-relaxed text-[var(--ink-3)]">
-          Sizes follow recent notifications, but commissions do change them. Always confirm against the notification
-          for your cycle — every number stays editable.
+          Sizes follow published guidance, checked in {SPECS_CHECKED}, but commissions do change them. Always confirm
+          against the notification for your cycle — every number stays editable before your file is made.
         </p>
       </main>
 

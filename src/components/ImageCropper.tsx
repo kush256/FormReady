@@ -9,8 +9,23 @@ interface Props {
   onCropChange: (crop: CropRect) => void
 }
 
+/**
+ * The widest and narrowest frame worth drawing.
+ *
+ * The dimensions behind this are typed by hand, and a half-typed width of 1
+ * would otherwise ask the layout for a frame eighty thousand pixels tall. The
+ * requirement itself is still validated and reported separately; this only
+ * keeps the picture on the screen while someone is mid-keystroke.
+ */
+const MIN_ASPECT = 0.2
+const MAX_ASPECT = 6
+
 /** Pan-and-zoom cropper. Always covers the frame (no gaps), like a passport-photo crop tool. */
-export function ImageCropper({ img, aspect, background = '#e5e7eb', onCropChange }: Props) {
+export function ImageCropper({ img, aspect: requested, background = '#e5e7eb', onCropChange }: Props) {
+  const aspect =
+    Number.isFinite(requested) && requested > 0
+      ? Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, requested))
+      : 1
   const containerRef = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ w: 320, h: 320 / aspect })
   const [zoom, setZoom] = useState(1)

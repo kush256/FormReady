@@ -8,7 +8,7 @@ import { ImageCropper } from '../components/ImageCropper'
 import { ProgressPanel } from '../components/ProgressPanel'
 import { ResultView } from '../components/ResultView'
 import { Notice } from '../components/Notice'
-import { NumberField } from '../components/NumberField'
+import { SpecEditor } from '../components/SpecEditor'
 import { SignatureIllustration } from '../components/Illustrations'
 import { SignaturePad } from '../components/SignaturePad'
 import { PenIcon } from '../components/Icons'
@@ -25,7 +25,9 @@ import {
   releaseCanvas,
   type CropRect,
 } from '../lib/image'
-import { kbToBytes } from '../lib/format'
+import { formatBytes, kbToBytes } from '../lib/format'
+import { SPECS_CHECKED } from '../lib/exams'
+import type { ImageRequirement } from '../lib/requirements'
 
 type Step = 'setup' | 'draw' | 'crop' | 'working' | 'result'
 
@@ -43,7 +45,7 @@ const DEFAULT_MAX_KB = 20
 
 /** Set when arriving from a Government Exams document. */
 interface Prefill {
-  requirement?: { width: number; height: number; maxKb: number }
+  requirement?: ImageRequirement
   label?: string
   context?: string
 }
@@ -53,9 +55,12 @@ export function SignatureMaker() {
   const preset = prefill?.requirement
 
   const [step, setStep] = useState<Step>('setup')
-  const [width, setWidth] = useState(preset?.width ?? DEFAULT_WIDTH)
-  const [height, setHeight] = useState(preset?.height ?? DEFAULT_HEIGHT)
-  const [maxKb, setMaxKb] = useState(preset?.maxKb ?? DEFAULT_MAX_KB)
+  // One editable spec rather than three loose numbers, so the minimum an exam
+  // states travels with the rest of it instead of being quietly dropped.
+  const [spec, setSpec] = useState<ImageRequirement>(
+    preset ?? { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, maxKb: DEFAULT_MAX_KB },
+  )
+  const { width, height, maxKb } = spec
   const [cleanBackground, setCleanBackground] = useState(true)
 
   const [img, setImg] = useState<HTMLImageElement | null>(null)
@@ -72,6 +77,8 @@ export function SignatureMaker() {
   const cropCanvas = useRef<HTMLCanvasElement | null>(null)
 
   const aspect = useMemo(() => width / height, [width, height])
+  // A file under a stated floor is rejected as surely as one over the ceiling.
+  const metMinimum = !spec.minKb || !resultBlob || resultBlob.size >= kbToBytes(spec.minKb)
 
   async function handlePicked(files: File[]) {
     const file = files[0]
@@ -207,33 +214,14 @@ export function SignatureMaker() {
               </p>
             </div>
 
+            <SpecEditor
+              value={spec}
+              onChange={setSpec}
+              checked={SPECS_CHECKED}
+              source={prefill?.context ? `what ${prefill.context} published` : undefined}
+            />
+
             <div className="space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
-              <div className="grid grid-cols-3 gap-3">
-                <label>
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                    Width
-                  </span>
-                  <div className="mt-1">
-                    <NumberField value={width} min={40} onChange={setWidth} ariaLabel="Width in pixels" className="px-2 text-sm" />
-                  </div>
-                </label>
-                <label>
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                    Height
-                  </span>
-                  <div className="mt-1">
-                    <NumberField value={height} min={20} onChange={setHeight} ariaLabel="Height in pixels" className="px-2 text-sm" />
-                  </div>
-                </label>
-                <label>
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">
-                    Max KB
-                  </span>
-                  <div className="mt-1">
-                    <NumberField value={maxKb} min={1} onChange={setMaxKb} ariaLabel="Maximum size in KB" className="px-2 text-sm" />
-                  </div>
-                </label>
-              </div>
               <label className="flex items-center gap-2 text-xs text-[var(--ink-2)]">
                 <input
                   type="checkbox"
@@ -289,6 +277,21 @@ export function SignatureMaker() {
             <Button fullWidth onClick={process}>
               Prepare signature
             </Button>
+            <Button
+              variant="ghost"
+              fullWidth
+              onClick={() => {
+                setError(null)
+                setCrop(null)
+                setImg((previous) => {
+                  releaseImage(previous)
+                  return null
+                })
+                setStep('setup')
+              }}
+            >
+              Use a different image
+            </Button>
           </>
         )}
 
@@ -321,6 +324,7 @@ export function SignatureMaker() {
               checks={[
                 { label: `${width}×${height} px`, ok: true },
                 { label: `≤ ${maxKb} KB`, ok: metSize },
+                ...(spec.minKb ? [{ label: `≥ ${spec.minKb} KB`, ok: metMinimum }] : []),
                 { label: blueInk ? 'Blue ink' : 'Black ink', ok: !blueInk },
               ]}
               warning={
@@ -328,6 +332,8 @@ export function SignatureMaker() {
                   ? 'Ink converted to black and the paper cleaned to white.'
                   : !metSize
                     ? `Couldn't fit under ${maxKb} KB at usable quality.`
+                    : !metMinimum
+                      ? `This form asks for at least ${spec.minKb} KB and your signature came to ${formatBytes(resultBlob.size)}. Ink on white paper compresses very small, so at ${width}×${height} px it may not be able to reach the floor — larger dimensions are the only thing that adds bytes. Uploading this may be rejected.`
                     : drawn
                       ? 'Drawn on screen, trimmed to the ink and fitted to size.'
                       : undefined

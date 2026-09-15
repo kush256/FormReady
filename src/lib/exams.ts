@@ -11,6 +11,14 @@
 
 export type DocumentKind = 'photo' | 'signature' | 'document'
 
+/**
+ * When these numbers were last checked against published guidance.
+ *
+ * Shown to the user rather than kept in a comment, because a spec with no date
+ * on it invites more trust than it has earned.
+ */
+export const SPECS_CHECKED = 'September 2026'
+
 export interface ExamDocument {
   id: string
   label: string
@@ -30,6 +38,8 @@ export interface Exam {
   authority: string
   /** What a candidate would search for. */
   aliases: string[]
+  /** Where the authoritative numbers live, for the user to check against. */
+  portal: string
   documents: ExamDocument[]
 }
 
@@ -63,6 +73,7 @@ export const EXAMS: Exam[] = [
     name: 'SSC CGL',
     authority: 'Staff Selection Commission',
     aliases: ['combined graduate level', 'ssc'],
+    portal: 'ssc.gov.in (One Time Registration)',
     documents: [SSC_PHOTO, SSC_SIGNATURE],
   },
   {
@@ -70,6 +81,7 @@ export const EXAMS: Exam[] = [
     name: 'SSC CHSL',
     authority: 'Staff Selection Commission',
     aliases: ['combined higher secondary', 'ssc', '10+2'],
+    portal: 'ssc.gov.in (One Time Registration)',
     documents: [SSC_PHOTO, SSC_SIGNATURE],
   },
   {
@@ -77,6 +89,7 @@ export const EXAMS: Exam[] = [
     name: 'UPSC Civil Services',
     authority: 'Union Public Service Commission',
     aliases: ['ias', 'ips', 'cse', 'upsc prelims'],
+    portal: 'upsconline.gov.in',
     documents: [
       {
         id: 'photo',
@@ -98,7 +111,7 @@ export const EXAMS: Exam[] = [
         minKb: 20,
         maxKb: 300,
         format: 'JPG',
-        note: 'Black ink on white paper, inside a square frame.',
+        note: 'UPSC asks for the signature three times, one below the other, in black ink on white paper.',
       },
     ],
   },
@@ -107,13 +120,38 @@ export const EXAMS: Exam[] = [
     name: 'DSSSB',
     authority: 'Delhi Subordinate Services Selection Board',
     aliases: ['delhi', 'subordinate services'],
-    documents: [SSC_PHOTO, SSC_SIGNATURE],
+    portal: 'dsssbonline.nic.in (advertisement instructions)',
+    documents: [
+      {
+        id: 'photo',
+        label: 'Postcard photograph',
+        kind: 'photo',
+        width: 480,
+        height: 672,
+        minKb: 50,
+        maxKb: 300,
+        format: 'JPG',
+        note: 'Derived from 5 × 7 inch. DSSSB asks for a postcard photo, not a passport one — a passport-size upload is a common rejection.',
+      },
+      {
+        id: 'signature',
+        label: 'Signature',
+        kind: 'signature',
+        width: 140,
+        height: 110,
+        minKb: 10,
+        maxKb: 40,
+        format: 'JPG',
+        note: 'Black ink on white paper. Block capitals are rejected.',
+      },
+    ],
   },
   {
     id: 'neet-ug',
     name: 'NEET UG',
     authority: 'National Testing Agency',
     aliases: ['medical', 'nta', 'mbbs'],
+    portal: 'neet.nta.nic.in information bulletin',
     documents: [
       {
         id: 'photo',
@@ -166,6 +204,7 @@ export const EXAMS: Exam[] = [
     name: 'JEE Main',
     authority: 'National Testing Agency',
     aliases: ['engineering', 'nta', 'btech'],
+    portal: 'jeemain.nta.nic.in information bulletin',
     documents: [
       {
         id: 'photo',
@@ -176,7 +215,7 @@ export const EXAMS: Exam[] = [
         minKb: 10,
         maxKb: 300,
         format: 'JPG',
-        note: 'Derived from 3.5 × 4.5 cm. Plain white background, face at least 80% of the frame, both ears visible.',
+        note: 'Derived from 3.5 × 4.5 cm. Plain white background, face at least 80% of the frame, both ears visible. Recent bulletins have lowered the ceiling to 200 KB — check yours.',
       },
       {
         id: 'signature',
@@ -196,6 +235,7 @@ export const EXAMS: Exam[] = [
     name: 'JEE Advanced',
     authority: 'IIT (rotating host)',
     aliases: ['iit', 'engineering'],
+    portal: 'jeeadv.ac.in information brochure',
     documents: [
       {
         id: 'photo',
@@ -203,10 +243,10 @@ export const EXAMS: Exam[] = [
         kind: 'photo',
         width: 276,
         height: 354,
-        minKb: 10,
-        maxKb: 300,
+        minKb: 4,
+        maxKb: 100,
         format: 'JPG',
-        note: 'Derived from 3.5 × 4.5 cm. Plain background, taken recently.',
+        note: 'Derived from 3.5 × 4.5 cm. JEE Advanced allows far less than JEE Main — 100 KB, not 300.',
       },
       {
         id: 'signature',
@@ -214,8 +254,8 @@ export const EXAMS: Exam[] = [
         kind: 'signature',
         width: 280,
         height: 120,
-        minKb: 10,
-        maxKb: 100,
+        minKb: 1,
+        maxKb: 30,
         format: 'JPG',
         note: 'Black ink on white paper.',
       },
@@ -226,6 +266,7 @@ export const EXAMS: Exam[] = [
     name: 'IBPS PO',
     authority: 'Institute of Banking Personnel Selection',
     aliases: ['bank', 'probationary officer', 'sbi'],
+    portal: 'ibps.in (detailed advertisement)',
     documents: [
       SSC_PHOTO,
       SSC_SIGNATURE,
@@ -258,7 +299,31 @@ export const EXAMS: Exam[] = [
     name: 'RRB NTPC',
     authority: 'Railway Recruitment Board',
     aliases: ['railway', 'ntpc'],
-    documents: [SSC_PHOTO, SSC_SIGNATURE],
+    portal: 'rrbapply.gov.in (the CEN for your cycle)',
+    documents: [
+      {
+        id: 'photo',
+        label: 'Photograph',
+        kind: 'photo',
+        width: 276,
+        height: 354,
+        minKb: 30,
+        maxKb: 70,
+        format: 'JPG',
+        note: 'Derived from 3.5 × 4.5 cm. Railways ask for 30–70 KB, not the 20–50 KB most other boards use.',
+      },
+      {
+        id: 'signature',
+        label: 'Signature',
+        kind: 'signature',
+        width: 394,
+        height: 157,
+        minKb: 10,
+        maxKb: 70,
+        format: 'JPG',
+        note: 'Derived from 5 × 2 cm. Running handwriting only. Some CENs state a 30 KB floor — check yours.',
+      },
+    ],
   },
 ]
 

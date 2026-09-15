@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { useLocation } from 'react-router-dom'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
 import { Button } from '../components/Button'
@@ -39,6 +40,8 @@ function formatEta(seconds: number): string {
 }
 
 export function CompressPdf() {
+  // Set when opened from an exam, so the screen says which form this is for.
+  const context = ((useLocation().state ?? null) as { context?: string } | null)?.context
   const [step, setStep] = useState<Step>('pick')
   const [file, setFile] = useState<File | null>(null)
   const [targetBytes, setTargetBytes] = useState(500 * 1024)
@@ -140,7 +143,10 @@ export function CompressPdf() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <ScreenHeader title="Compress PDF" subtitle={file ? file.name : undefined} />
+      <ScreenHeader
+        title="Compress PDF"
+        subtitle={file ? (context ? `${context} · ${file.name}` : file.name) : context}
+      />
 
       <main className="flex-1 space-y-5 px-5 py-4">
         {error && (

@@ -11,6 +11,7 @@ import { SpecChip } from '../components/SpecChip'
 import { Notice } from '../components/Notice'
 import { NumberField } from '../components/NumberField'
 import { SizeField } from '../components/SizeField'
+import { SpecEditor } from '../components/SpecEditor'
 import { PhotoIllustration } from '../components/Illustrations'
 import { ChevronRightIcon } from '../components/Icons'
 import { captureFromCamera, pickImages } from '../lib/picker'
@@ -24,6 +25,7 @@ import {
 } from '../lib/image'
 import { describeRequirement, explainMaxQuality, type ImageRequirement } from '../lib/requirements'
 import { formatBytes, kbToBytes } from '../lib/format'
+import { SPECS_CHECKED } from '../lib/exams'
 import {
   assessPhoto,
   preparePhoto,
@@ -44,7 +46,9 @@ const PRESETS: Preset[] = [
   // SSC states a band, not a ceiling: a photo under 20 KB is rejected as surely
   // as one over 50.
   { label: 'SSC / IBPS photo', note: 'Most recruitment portals', width: 200, height: 230, minKb: 20, maxKb: 50 },
-  { label: 'UPSC photo', note: 'Square crop', width: 350, height: 350, maxKb: 50 },
+  // UPSC's own band is 20-300 KB. A 50 KB ceiling here was ours, not theirs,
+  // and it threw away five sixths of what the portal accepts.
+  { label: 'UPSC photo', note: 'Square crop, 20–300 KB', width: 350, height: 350, minKb: 20, maxKb: 300 },
   { label: 'Passport size', note: 'Larger print-quality photo', width: 413, height: 531, maxKb: 100 },
   { label: 'Admit card photo', note: 'Smaller exam portals', width: 150, height: 200, maxKb: 30 },
 ]
@@ -92,8 +96,15 @@ export function SmartPhoto() {
   const [step, setStep] = useState<Step>(preset ? 'source' : 'requirement')
   const [presetIndex, setPresetIndex] = useState(0)
   const [mode, setMode] = useState<Mode>(preset ? 'custom' : 'preset')
-  /** Only ever comes from an exam deep link now; the hand-typed card is gone. */
-  const [custom] = useState<ImageRequirement>(preset ?? { width: 200, height: 230, maxKb: 50 })
+  /**
+   * The spec the photo will actually be made to.
+   *
+   * It starts from the exam deep link or the chosen preset, and stays editable
+   * right up to the moment the work runs: our numbers are a record of what a
+   * commission published at some point, not of what the form in front of the
+   * user says today.
+   */
+  const [spec, setSpec] = useState<ImageRequirement>(preset ?? PRESETS[0])
 
   // Size-first state. This arm keeps the File rather than a decoded image:
   // nothing is decoded at full size, and every render goes straight from the
@@ -137,7 +148,7 @@ export function SmartPhoto() {
     }
   }, [])
 
-  const target: ImageRequirement = mode === 'custom' ? custom : PRESETS[presetIndex]
+  const target: ImageRequirement = spec
   // A file under a stated floor is rejected as surely as one over the ceiling.
   const metMinimum = !target.minKb || !resultBlob || resultBlob.size >= kbToBytes(target.minKb)
   const aspect = useMemo(() => target.width / target.height, [target.width, target.height])
@@ -266,6 +277,31 @@ export function SmartPhoto() {
     }
   }
 
+  /** Wrong photo picked: back to the picker without losing the numbers. */
+  function changePhoto() {
+    setError(null)
+    setCrop(null)
+    setImg((previous) => {
+      releaseImage(previous)
+      return null
+    })
+    setStep('source')
+  }
+
+  /** The same, for the size-first arm, which holds a decoded photo to release. */
+  function changeSizePhoto() {
+    setError(null)
+    setAssessment(null)
+    photoRef.current?.close()
+    photoRef.current = null
+    setFacts(null)
+    setSourceUrl((previous) => {
+      if (previous) URL.revokeObjectURL(previous)
+      return null
+    })
+    setStep('sizeSource')
+  }
+
   async function process() {
     if (!img || !crop) return
     setStage({ label: 'Cropping to size', fraction: 0.05 })
@@ -345,6 +381,10 @@ export function SmartPhoto() {
             <div>
               <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">What does the form need?</h2>
               <p className="mt-1 text-sm text-[var(--ink-2)]">Pick a common requirement, or enter your own.</p>
+              <p className="mt-2 text-xs leading-relaxed text-[var(--ink-3)]">
+                These presets follow recent notifications, checked in {SPECS_CHECKED}. Confirm them against the form
+                you are filling — every number stays editable before your photo is made.
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -356,6 +396,12 @@ export function SmartPhoto() {
                     onClick={() => {
                       setMode('preset')
                       setPresetIndex(i)
+                      setSpec({
+                        width: preset.width,
+                        height: preset.height,
+                        maxKb: preset.maxKb,
+                        minKb: preset.minKb,
+                      })
                     }}
                     className={`flex w-full items-center justify-between gap-3 rounded-2xl border p-4 text-left transition-colors ${
                       active
@@ -368,7 +414,7 @@ export function SmartPhoto() {
                       <span className="block text-xs text-[var(--ink-2)]">{preset.note}</span>
                     </span>
                     <SpecChip state={active ? 'ok' : 'neutral'} icon={false}>
-                      {preset.width}×{preset.height} · {preset.maxKb}KB
+                      {preset.width}×{preset.height} · {preset.minKb ? `${preset.minKb}–${preset.maxKb}` : `≤ ${preset.maxKb}`}KB
                     </SpecChip>
                   </button>
                 )
@@ -423,8 +469,25 @@ export function SmartPhoto() {
               </p>
             </div>
             <ImageCropper img={img} aspect={aspect} onCropChange={setCrop} />
+
+            <SpecEditor
+              value={spec}
+              onChange={setSpec}
+              checked={SPECS_CHECKED}
+              source={
+                prefill?.context
+                  ? `what ${prefill.context} published`
+                  : mode === 'preset'
+                    ? `the ${PRESETS[presetIndex].label} preset`
+                    : undefined
+              }
+            />
+
             <Button fullWidth onClick={process}>
               Prepare photo
+            </Button>
+            <Button variant="ghost" fullWidth onClick={changePhoto}>
+              Use a different photo
             </Button>
           </>
         )}
@@ -465,6 +528,14 @@ export function SmartPhoto() {
                 <SpecChip icon={false}>{formatBytes(facts.bytes)}</SpecChip>
                 <SpecChip icon={false}>{facts.format}</SpecChip>
               </div>
+              {/* Picking the wrong photo used to mean leaving the screen
+                  altogether and starting the tool again. */}
+              <button
+                onClick={changeSizePhoto}
+                className="mx-auto mt-3 block rounded-lg px-3 py-1.5 text-xs font-semibold text-[var(--accent)] active:bg-[var(--surface-sunk)]"
+              >
+                Use a different photo
+              </button>
             </div>
 
             <div>
@@ -640,6 +711,9 @@ export function SmartPhoto() {
             </Button>
             <Button variant="ghost" fullWidth onClick={() => setStep('sizeTarget')}>
               Change the numbers
+            </Button>
+            <Button variant="ghost" fullWidth onClick={changeSizePhoto}>
+              Use a different photo
             </Button>
           </>
         )}

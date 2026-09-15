@@ -706,6 +706,89 @@ async function main() {
   await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
   check('Exam-driven photo meets the exam spec', (await page.locator('main').innerText()).includes('Meets every requirement'))
 
+  // ---- Picking the wrong photo is recoverable without leaving the screen ----
+  // Reported from the device: "to change the photo I have to go back to home
+  // and return to the section". Nothing on either screen offered a way back to
+  // the picker once a photo had been read.
+  await openSizeFirst(page, `${A}/test-photo-1.jpg`)
+  check('The photo just read is the one shown', (await page.locator('main').innerText()).includes('1600×1200 px'))
+  await page.locator('button:has-text("Use a different photo")').click()
+  await page.waitForSelector('text=Start with your photo')
+  check('Change photo returns to the picker, not to the home screen', (await page.locator('text=Start with your photo').count()) > 0)
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-small.jpg`])
+  await page.waitForSelector('text=Here is your photo')
+  const swapped = await page.locator('main').innerText()
+  check('The second photo replaces the first', swapped.includes('240×320 px') && !swapped.includes('1600×1200 px'), swapped.slice(0, 60).replace(/\n/g, ' '))
+
+  // the same escape hatch on the framing screen
+  await openTool(page, 'smart-photo')
+  await page.waitForSelector('text=What does the form need?')
+  await page.locator('button:has-text("Continue")').click()
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
+  await page.waitForSelector('text=Frame your photo')
+  await page.locator('button:has-text("Use a different photo")').click()
+  await page.waitForSelector('text=Add your photo')
+  check('Framing screen can go back for another photo', (await page.locator('text=Add your photo').count()) > 0)
+
+  // ---- The spec is editable at the last moment, and the edit is obeyed ----
+  // A number we published months ago is not the number on the form in front of
+  // the user. Everything has to be changeable before the file is made, and the
+  // change has to reach the encoder — not just the label above it.
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
+  await page.waitForSelector('text=Frame your photo')
+  const specText = await page.locator('main').innerText()
+  check('The output spec is shown before the work runs', /WHAT WILL BE PRODUCED/i.test(specText))
+  check('It says where the numbers came from', /confirm against the notification/i.test(specText))
+
+  async function typeInto(locator, value) {
+    await locator.click()
+    await page.keyboard.press('Control+a')
+    await page.keyboard.press('Backspace')
+    await page.keyboard.type(String(value))
+    await page.locator('body').click()
+    await page.waitForTimeout(120)
+  }
+  await typeInto(page.getByLabel('Width (px)'), 400)
+  await typeInto(page.getByLabel('Height (px)'), 460)
+  await typeInto(page.getByLabel('Largest allowed size in KB'), 80)
+  await page.locator('button:has-text("Prepare photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const edited = await readPreparedPhoto(page)
+  check('An edited requirement is what actually gets made', edited.width === 400 && edited.height === 460, `${edited.width}×${edited.height}`)
+  check('An edited size limit is honoured', edited.bytes <= 80 * 1024, `${(edited.bytes / 1024).toFixed(1)} KB of 80 KB`)
+
+  // ---- Exam specs carry a date and a source, and say to check them ----
+  await openTool(page, 'gov-exams/ssc-cgl')
+  await page.waitForSelector('text=documents to prepare')
+  const sscText = await page.locator('main').innerText()
+  check('Exam screen tells the user to confirm the numbers', /check these against your notification/i.test(sscText))
+  check('It names when the numbers were checked and against what', sscText.includes('September 2026') && sscText.includes('ssc.gov.in'))
+
+  // ---- Corrected specs: two exams were carrying SSC's numbers ----
+  await openTool(page, 'gov-exams/dsssb')
+  await page.waitForSelector('text=documents to prepare')
+  const dsssb = await page.locator('main').innerText()
+  check('DSSSB asks for its own postcard photo, not SSC’s passport one', dsssb.includes('480×672 px') && dsssb.includes('50–300 KB'), dsssb.includes('200×230 px') ? 'still SSC' : '')
+  await openTool(page, 'gov-exams/rrb-ntpc')
+  await page.waitForSelector('text=documents to prepare')
+  const rrb = await page.locator('main').innerText()
+  check('RRB NTPC states the railway band, not SSC’s', rrb.includes('30–70 KB') && !rrb.includes('200×230 px'), rrb.includes('200×230 px') ? 'still SSC dimensions' : '')
+  await openTool(page, 'smart-photo')
+  await page.waitForSelector('text=What does the form need?')
+  check('The UPSC preset allows what UPSC allows', (await page.locator('main').innerText()).includes('20–300KB'))
+
+  // ---- Any other document: a PDF route out of the exam screen ----
+  await openTool(page, 'gov-exams/ssc-cgl')
+  await page.waitForSelector('text=documents to prepare')
+  check('The exam offers a PDF document option', (await page.locator('button:has-text("Compress a PDF document")').count()) === 1)
+  await page.locator('button:has-text("Compress a PDF document")').click()
+  await page.waitForSelector('text=Compress PDF')
+  check('It opens the PDF compressor, named for the exam', (await page.locator('header').innerText()).includes('SSC CGL'))
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-heavy.pdf`])
+  await page.waitForSelector('text=Maximum size', { timeout: 10000 })
+  const pdfFromExam = await page.locator('header').innerText()
+  check('A PDF picked from the exam route keeps the exam’s name', pdfFromExam.includes('SSC CGL') && pdfFromExam.includes('test-doc-heavy.pdf'))
+
   // ---- Resize Photo: a size limit applies to PNG as well as JPEG ----
   await openTool(page, 'resize-photo')
   await page.waitForSelector('text=Resize Photo')
