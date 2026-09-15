@@ -471,6 +471,9 @@ export function SmartPhoto() {
               <p className="mt-1 text-sm text-[var(--ink-2)]">
                 Everything inside the frame becomes the {target.width}×{target.height} px photo.
               </p>
+              {sourceBytes > 0 && (
+                <p className="mt-1 text-xs text-[var(--ink-3)]">Original: {formatBytes(sourceBytes)}</p>
+              )}
             </div>
             <ImageCropper img={img} aspect={aspect} onCropChange={setCrop} />
 

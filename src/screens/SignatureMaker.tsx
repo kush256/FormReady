@@ -71,6 +71,9 @@ export function SignatureMaker() {
   const [error, setError] = useState<string | null>(null)
   const [stage, setStage] = useState(0)
   const [drawn, setDrawn] = useState(false)
+  // Only meaningful for the photographed path — a signature drawn on screen
+  // has no source file to report.
+  const [sourceBytes, setSourceBytes] = useState(0)
 
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
   const [resultUrl, setResultUrl] = useState<string | null>(null)
@@ -88,6 +91,7 @@ export function SignatureMaker() {
     if (!file) return
     try {
       setError(null)
+      setSourceBytes(file.size)
       const image = await loadCappedImage(file)
       setImg((previous) => {
         releaseImage(previous)
@@ -185,6 +189,7 @@ export function SignatureMaker() {
       return null
     })
     setDrawn(false)
+    setSourceBytes(0)
     setImg((previous) => {
       releaseImage(previous)
       return null
@@ -282,6 +287,9 @@ export function SignatureMaker() {
               <p className="mt-1 text-sm text-[var(--ink-2)]">
                 Crop tight to the signature. Leave out any printed name.
               </p>
+              {sourceBytes > 0 && (
+                <p className="mt-1 text-xs text-[var(--ink-3)]">Original: {formatBytes(sourceBytes)}</p>
+              )}
             </div>
             <ImageCropper img={img} aspect={aspect} onCropChange={setCrop} />
             <Button fullWidth onClick={process}>
@@ -331,6 +339,9 @@ export function SignatureMaker() {
               filename={`signature-${width}x${height}.jpg`}
               previewUrl={resultUrl}
               previewWidth={width}
+              // A drawn signature has no source file to compare against; a
+              // photographed one does, and gets the real Before/After.
+              originalBytes={drawn ? undefined : sourceBytes || undefined}
               checks={[
                 { label: `${width}×${height} px`, ok: true },
                 { label: `≤ ${maxKb} KB`, ok: metSize },

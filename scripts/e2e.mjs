@@ -93,6 +93,10 @@ async function main() {
   await page.waitForSelector('text=Add your photo')
   await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
   await page.waitForSelector('text=Frame your photo')
+  const photoCrop = await page.locator('main').innerText()
+  const photoSourceKb = Math.round(fs.statSync(`${A}/test-photo-1.jpg`).size / 1024)
+  const photoShownKb = [...photoCrop.matchAll(/Original:\s*([\d.]+)\s*KB/g)].map((m) => parseFloat(m[1]))[0]
+  check('Framing a photo names the file it came from', Math.abs(photoShownKb - photoSourceKb) <= 2, `showed ${photoShownKb} KB, file is ${photoSourceKb} KB`)
 
   // Watch the preparing screen. It used to show a frozen bar and an ellipsis
   // with no number, which reads as a hang.
@@ -344,8 +348,19 @@ async function main() {
   await page.waitForSelector('text=Add your signature')
   await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/blue-signature.jpg`])
   await page.waitForSelector('text=Frame your signature')
+  // The framing screen said what it would produce but nothing about the file
+  // just picked, so there was no way to tell what was being cut down from.
+  const sigCrop = await page.locator('main').innerText()
+  const sigSourceKb = Math.round(fs.statSync(`${A}/blue-signature.jpg`).size / 1024)
+  const sigShownKb = [...sigCrop.matchAll(/Original:\s*([\d.]+)\s*KB/g)].map((m) => parseFloat(m[1]))[0]
+  check('Framing a signature names the file it came from', Math.abs(sigShownKb - sigSourceKb) <= 2, `showed ${sigShownKb} KB, file is ${sigSourceKb} KB`)
   await page.locator('button:has-text("Prepare signature")').click()
   await page.waitForSelector('text=Your signature is ready', { timeout: 20000 })
+  // The size it actually produced, which the pass/fail chips never stated.
+  const sigResult = await page.locator('main').innerText()
+  check('A photographed signature reports before and after', /BEFORE/i.test(sigResult) && /AFTER/i.test(sigResult), sigResult.slice(0, 70).replace(/\n/g, ' '))
+  const sigAfterKb = [...sigResult.matchAll(/([\d.]+)\s*KB/g)].map((m) => parseFloat(m[1]))[1]
+  check('And the after figure is the real file size', sigAfterKb > 0 && sigAfterKb <= 20, `${sigAfterKb} KB against a 20 KB ceiling`)
   check('Blue ink detected', (await page.locator('text=Blue ink detected').count()) > 0)
   await page.locator('button:has-text("Convert to black ink")').click()
   await page.waitForTimeout(800)
@@ -968,6 +983,10 @@ async function main() {
   const drawnText = await page.locator('main').innerText()
   check('Drawn signature meets the spec', drawnText.includes('140×60 px') && drawnText.includes('20 KB'))
   check('Drawn signature reads as black ink', drawnText.includes('Black ink'))
+  // Nothing was compressed, so there is no "before" to show — but the size it
+  // came to still has to be on the screen. A 46 KB result with only a "≤ 300
+  // KB" tick beside it is what sent the user asking what it had produced.
+  check('A drawn signature still states its size', !/BEFORE/i.test(drawnText) && /^\s*[\d.]+\s*KB\s*$/m.test(drawnText), drawnText.slice(0, 70).replace(/\n/g, ' '))
 
   // ---- Privacy wording is present and explicit ----
   await page.goto(BASE)

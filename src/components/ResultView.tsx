@@ -95,7 +95,7 @@ export function ResultView({
     <div className="space-y-4">
       <h2 className="text-xl font-extrabold tracking-tight text-[var(--ink)]">{heading}</h2>
 
-      {originalBytes !== undefined && (
+      {originalBytes !== undefined ? (
         <div className="flex items-center gap-3">
           <div className="flex-1 text-center">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--ink-3)]">Before</p>
@@ -111,6 +111,14 @@ export function ResultView({
             </p>
           </div>
         </div>
+      ) : (
+        // No source file to compare against — a signature drawn on screen has
+        // no "before". The produced size still has to be visible somewhere:
+        // a pass/fail chip like "≤ 300 KB" never says what number it actually
+        // measured.
+        <p className="text-center font-mono text-sm font-semibold text-[var(--ok)] tabular-nums">
+          {formatBytes(blob.size)}
+        </p>
       )}
 
       {previewUrl && (
