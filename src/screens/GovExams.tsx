@@ -2,8 +2,9 @@ import { useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ScreenHeader } from '../components/ScreenHeader'
 import { PrivacyFooter } from '../components/PrivacyFooter'
-import { ChevronRightIcon, SearchIcon } from '../components/Icons'
-import { EXAMS, searchExams, SPECS_CHECKED } from '../lib/exams'
+import { ChevronRightIcon, SearchIcon, PlusIcon } from '../components/Icons'
+import { EXAMS, searchExams, type Exam } from '../lib/exams'
+import { loadCustomExams } from '../lib/customExams'
 import { EmptyState } from '../components/EmptyState'
 import { Button } from '../components/Button'
 import { SearchEmptyIllustration } from '../components/Illustrations'
@@ -35,11 +36,18 @@ function initials(name: string): string {
 export function GovExams() {
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
-  const results = useMemo(() => searchExams(query), [query])
+  // Read once per visit: the list is small, and it has to pick up an exam added
+  // or deleted on the screen the user just came back from.
+  const mine = useMemo(() => loadCustomExams(), [])
+  const mineIds = useMemo(() => new Set(mine.map((exam) => exam.id)), [mine])
+  const results = useMemo(() => [...matching(mine, query), ...searchExams(query)], [mine, query])
 
   return (
     <div className="flex min-h-screen flex-col">
-      <ScreenHeader title="Government Exams" subtitle={`${EXAMS.length} exams`} />
+      <ScreenHeader
+        title="Government Exams"
+        subtitle={mine.length ? `${EXAMS.length} exams · ${mine.length} of yours` : `${EXAMS.length} exams`}
+      />
 
       <main className="flex-1 space-y-5 px-5 py-4">
         <div>
@@ -69,10 +77,10 @@ export function GovExams() {
           <EmptyState
             illustration={<SearchEmptyIllustration size={190} />}
             title="No exam called that yet"
-            description="Open Smart Photo instead and type the numbers straight from your form."
+            description="Add it yourself with the sizes your form asks for, and it stays in this list."
             action={
-              <Button fullWidth variant="secondary" onClick={() => navigate('/smart-photo')}>
-                Open Smart Photo
+              <Button fullWidth variant="secondary" onClick={() => navigate('/gov-exams/custom')}>
+                Add your exam
               </Button>
             }
           />
@@ -104,7 +112,9 @@ export function GovExams() {
                       <span className="block truncate text-[15px] font-bold tracking-tight text-[var(--ink)]">
                         {exam.name}
                       </span>
-                      <span className="block truncate text-xs text-[var(--ink-2)]">{exam.authority}</span>
+                      <span className="block truncate text-xs text-[var(--ink-2)]">
+                        {mineIds.has(exam.id) ? 'Added by you' : exam.authority}
+                      </span>
                     </span>
                     <span className="shrink-0 font-mono text-[11px] text-[var(--ink-3)] tabular-nums">
                       {exam.documents.length} docs
@@ -117,13 +127,31 @@ export function GovExams() {
           </ul>
         )}
 
-        <p className="text-xs leading-relaxed text-[var(--ink-3)]">
-          Sizes follow published guidance, checked in {SPECS_CHECKED}, but commissions do change them. Always confirm
-          against the notification for your cycle — every number stays editable before your file is made.
-        </p>
+        {/* Nine exams cannot cover every board in the country. */}
+        <button
+          onClick={() => navigate('/gov-exams/custom')}
+          className="flex w-full items-center gap-3.5 rounded-2xl border border-dashed border-[var(--line-strong)] p-3.5 text-left active:bg-[var(--surface-sunk)]"
+        >
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--accent-soft)] text-[var(--accent)]">
+            <PlusIcon width={20} height={20} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[15px] font-bold tracking-tight text-[var(--ink)]">
+              My exam isn't listed
+            </span>
+            <span className="block text-xs text-[var(--ink-2)]">Add it with the sizes your form asks for</span>
+          </span>
+          <ChevronRightIcon width={17} height={17} className="shrink-0 text-[var(--ink-3)]" />
+        </button>
       </main>
 
       <PrivacyFooter className="safe-bottom" />
     </div>
   )
+}
+
+function matching(exams: Exam[], query: string): Exam[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return exams
+  return exams.filter((exam) => exam.name.toLowerCase().includes(q))
 }

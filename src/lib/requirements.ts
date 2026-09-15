@@ -84,7 +84,7 @@ export function validateRequirement(
       const fitHeight = Math.min(MAX_EDGE, Math.round(req.height * grow))
       return {
         title: "That minimum can't be reached",
-        detail: `A ${req.width}×${req.height} px photo tops out around ${formatBytes(ceilingBytes)} even at full quality, which is under the ${req.minKb} KB this form wants. Either the dimensions or the minimum has to give.`,
+        detail: `A ${req.width}×${req.height} px image tops out around ${formatBytes(ceilingBytes)} even at full quality, which is under the ${req.minKb} KB asked for. Either the dimensions or the minimum has to give.`,
         fixes: [
           { label: `Ask for ${Math.floor(ceilingBytes / 1024)} KB`, requirement: { ...req, minKb: Math.floor(ceilingBytes / 1024) } },
           {

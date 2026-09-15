@@ -104,7 +104,13 @@ export function SmartPhoto() {
    * commission published at some point, not of what the form in front of the
    * user says today.
    */
-  const [spec, setSpec] = useState<ImageRequirement>(preset ?? PRESETS[0])
+  // The floor starts off, whoever published it: a ceiling is the number every
+  // form states, a floor the exception. What the board published is kept beside
+  // the editor and restored the moment the user asks for it.
+  const [spec, setSpec] = useState<ImageRequirement>(() => {
+    const from = preset ?? PRESETS[0]
+    return { width: from.width, height: from.height, maxKb: from.maxKb }
+  })
 
   // Size-first state. This arm keeps the File rather than a decoded image:
   // nothing is decoded at full size, and every render goes straight from the
@@ -149,6 +155,9 @@ export function SmartPhoto() {
   }, [])
 
   const target: ImageRequirement = spec
+  /** The floor the form itself states, which is not the same as one in force. */
+  const publishedMinKb = mode === 'preset' ? PRESETS[presetIndex].minKb : prefill?.requirement?.minKb
+  const publishedBy = prefill?.context ?? (mode === 'preset' ? PRESETS[presetIndex].label : undefined)
   // A file under a stated floor is rejected as surely as one over the ceiling.
   const metMinimum = !target.minKb || !resultBlob || resultBlob.size >= kbToBytes(target.minKb)
   const aspect = useMemo(() => target.width / target.height, [target.width, target.height])
@@ -396,12 +405,7 @@ export function SmartPhoto() {
                     onClick={() => {
                       setMode('preset')
                       setPresetIndex(i)
-                      setSpec({
-                        width: preset.width,
-                        height: preset.height,
-                        maxKb: preset.maxKb,
-                        minKb: preset.minKb,
-                      })
+                      setSpec({ width: preset.width, height: preset.height, maxKb: preset.maxKb })
                     }}
                     className={`flex w-full items-center justify-between gap-3 rounded-2xl border p-4 text-left transition-colors ${
                       active
@@ -474,9 +478,11 @@ export function SmartPhoto() {
               value={spec}
               onChange={setSpec}
               checked={SPECS_CHECKED}
+              publishedMinKb={publishedMinKb}
+              publishedBy={publishedBy}
               source={
                 prefill?.context
-                  ? `what ${prefill.context} published`
+                  ? `the ${prefill.context} spec`
                   : mode === 'preset'
                     ? `the ${PRESETS[presetIndex].label} preset`
                     : undefined

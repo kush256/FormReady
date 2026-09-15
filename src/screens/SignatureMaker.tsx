@@ -27,7 +27,7 @@ import {
 } from '../lib/image'
 import { formatBytes, kbToBytes } from '../lib/format'
 import { SPECS_CHECKED } from '../lib/exams'
-import type { ImageRequirement } from '../lib/requirements'
+import { describeRequirement, type ImageRequirement } from '../lib/requirements'
 
 type Step = 'setup' | 'draw' | 'crop' | 'working' | 'result'
 
@@ -57,9 +57,12 @@ export function SignatureMaker() {
   const [step, setStep] = useState<Step>('setup')
   // One editable spec rather than three loose numbers, so the minimum an exam
   // states travels with the rest of it instead of being quietly dropped.
-  const [spec, setSpec] = useState<ImageRequirement>(
-    preset ?? { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, maxKb: DEFAULT_MAX_KB },
-  )
+  const [spec, setSpec] = useState<ImageRequirement>(() => ({
+    width: preset?.width ?? DEFAULT_WIDTH,
+    height: preset?.height ?? DEFAULT_HEIGHT,
+    maxKb: preset?.maxKb ?? DEFAULT_MAX_KB,
+    // The floor a board publishes is shown beside the editor, not imposed.
+  }))
   const { width, height, maxKb } = spec
   const [cleanBackground, setCleanBackground] = useState(true)
 
@@ -197,7 +200,12 @@ export function SignatureMaker() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <ScreenHeader title={prefill?.label ?? 'Signature Maker'} subtitle={prefill?.context ? `${prefill.context} · ${width}×${height} px · ≤ ${maxKb} KB` : `${width}×${height} px · ≤ ${maxKb} KB`} />
+      <ScreenHeader
+        title={prefill?.label ?? 'Signature Maker'}
+        subtitle={
+          prefill?.context ? `${prefill.context} · ${describeRequirement(spec)}` : describeRequirement(spec)
+        }
+      />
 
       <main className="flex-1 space-y-5 px-5 py-4">
         {error && (
@@ -218,7 +226,9 @@ export function SignatureMaker() {
               value={spec}
               onChange={setSpec}
               checked={SPECS_CHECKED}
-              source={prefill?.context ? `what ${prefill.context} published` : undefined}
+              publishedMinKb={preset?.minKb}
+              publishedBy={prefill?.context}
+              source={prefill?.context ? `the ${prefill.context} spec` : undefined}
             />
 
             <div className="space-y-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">

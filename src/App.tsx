@@ -12,6 +12,7 @@ const MergePdf = lazy(() => import('./screens/MergePdf').then((m) => ({ default:
 const SplitPdf = lazy(() => import('./screens/SplitPdf').then((m) => ({ default: m.SplitPdf })))
 const GovExams = lazy(() => import('./screens/GovExams').then((m) => ({ default: m.GovExams })))
 const ExamDetail = lazy(() => import('./screens/ExamDetail').then((m) => ({ default: m.ExamDetail })))
+const CustomExam = lazy(() => import('./screens/CustomExam').then((m) => ({ default: m.CustomExam })))
 const Onboarding = lazy(() => import('./screens/Onboarding').then((m) => ({ default: m.Onboarding })))
 
 /**
@@ -46,6 +47,9 @@ function App() {
             <Route path="/merge-pdf" element={<MergePdf />} />
             <Route path="/split-pdf" element={<SplitPdf />} />
             <Route path="/gov-exams" element={<GovExams />} />
+            {/* Before the :examId route, so "custom" is never read as an exam id. */}
+            <Route path="/gov-exams/custom" element={<CustomExam />} />
+            <Route path="/gov-exams/custom/:examId" element={<CustomExam />} />
             <Route path="/gov-exams/:examId" element={<ExamDetail />} />
           </Routes>
         </Suspense>

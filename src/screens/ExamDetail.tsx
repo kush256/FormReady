@@ -9,9 +9,9 @@ import {
   SignatureIcon,
   ImageToPdfIcon,
   CompressPdfIcon,
-  WarningIcon,
 } from '../components/Icons'
 import { findExam, describeSize, SPECS_CHECKED, type ExamDocument } from '../lib/exams'
+import { findCustomExam, isCustomExamId } from '../lib/customExams'
 
 const KIND_ICON = {
   photo: SmartPhotoIcon,
@@ -22,7 +22,9 @@ const KIND_ICON = {
 export function ExamDetail() {
   const { examId } = useParams()
   const navigate = useNavigate()
-  const exam = examId ? findExam(examId) : undefined
+  // An exam the user added behaves exactly like a built-in one from here on.
+  const isMine = !!examId && isCustomExamId(examId)
+  const exam = examId ? (isMine ? findCustomExam(examId) : findExam(examId)) : undefined
 
   if (!exam) {
     return (
@@ -39,6 +41,12 @@ export function ExamDetail() {
   }
 
   function open(doc: ExamDocument) {
+    // A PDF has no pixel size to hit, so it goes to the compressor with the
+    // limit the form states rather than to an image tool.
+    if (doc.format === 'PDF') {
+      navigate('/compress-pdf', { state: { context: exam!.name, targetBytes: doc.maxKb * 1024 } })
+      return
+    }
     // Signature Maker knows about ink; everything else is a framed image.
     const path = doc.kind === 'signature' ? '/signature-maker' : '/smart-photo'
     navigate(path, {
@@ -66,20 +74,24 @@ export function ExamDetail() {
           </p>
         </div>
 
-        {/* The numbers below are ours, taken from published guidance at a point
-            in time. Saying so plainly, next to them, is the difference between
-            a spec the user checks and one they trust blindly. */}
-        <div className="rounded-2xl border border-[var(--warn)]/30 bg-[var(--warn-soft)] p-4">
-          <p className="flex items-center gap-2 text-sm font-bold text-[var(--warn)]">
-            <WarningIcon width={16} height={16} />
-            Check these against your notification
+        {/* Ours, from published guidance at a point in time. Worth saying, not
+            worth alarming anyone about. */}
+        {isMine ? (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs leading-relaxed text-[var(--ink-2)]">The numbers you saved for this exam.</p>
+            <button
+              onClick={() => navigate(`/gov-exams/custom/${exam!.id}`)}
+              className="shrink-0 rounded-lg border border-[var(--line-strong)] px-3 py-1.5 text-xs font-semibold text-[var(--ink)] active:bg-[var(--surface-sunk)]"
+            >
+              Edit numbers
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs leading-relaxed text-[var(--ink-2)]">
+            Sizes as published in {SPECS_CHECKED}. Please check them against your exam notification — you can edit
+            every number before your file is made.
           </p>
-          <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-2)]">
-            Checked in {SPECS_CHECKED} against {exam.portal}. Boards do change these between cycles, and a file that
-            misses the stated size is rejected without saying why — so read the numbers on the form you are filling.
-            Every one of them stays editable on the next screen, before your file is made.
-          </p>
-        </div>
+        )}
 
         <ul className="space-y-2.5">
           {exam.documents.map((doc, i) => {
@@ -103,9 +115,11 @@ export function ExamDetail() {
                         <ChevronRightIcon width={17} height={17} className="shrink-0 text-[var(--ink-3)]" />
                       </div>
                       <div className="mt-2 flex flex-wrap gap-1.5">
-                        <SpecChip icon={false}>
-                          {doc.width}×{doc.height} px
-                        </SpecChip>
+                        {doc.format !== 'PDF' && (
+                          <SpecChip icon={false}>
+                            {doc.width}×{doc.height} px
+                          </SpecChip>
+                        )}
                         <SpecChip icon={false}>{describeSize(doc)}</SpecChip>
                         <SpecChip icon={false}>{doc.format}</SpecChip>
                       </div>

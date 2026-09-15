@@ -134,7 +134,7 @@ async function main() {
   // and a file under the floor is rejected as surely as one over the ceiling.
   // Nothing enforced this before: the minimum was in the exam data, shown in the
   // exam list, and then dropped on the way to this screen.
-  check('SSC preset states its minimum', sp.includes('≥ 20 KB'), sp.match(/[≥≤]\s*\d+\s*KB/g)?.join(' ') ?? 'no size chips')
+  check('The result reports against its ceiling', sp.includes('≤ 50 KB'), sp.match(/[≥≤]\s*\d+\s*KB/g)?.join(' ') ?? 'no size chips')
 
   await openTool(page, 'smart-photo')
   await page.waitForSelector('text=What does the form need?')
@@ -143,6 +143,12 @@ async function main() {
   await page.waitForSelector('text=Add your photo')
   await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-plain.jpg`])
   await page.waitForSelector('text=Frame your photo')
+  // The floor is opt-in: SSC states 20 KB, and ticking the box is what puts it
+  // in force. Tick it, and everything below must hold as before.
+  await page.getByLabel('This form also states a smallest size').check()
+  await page.waitForTimeout(150)
+  const seededFloor = await page.getByLabel('Smallest allowed size in KB').inputValue()
+  check('The preset’s own floor is what gets restored', seededFloor === '20', `${seededFloor} KB`)
   await page.locator('button:has-text("Prepare photo")').click()
   await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
   const plain = await page.locator('main').innerText()
@@ -738,7 +744,7 @@ async function main() {
   await page.waitForSelector('text=Frame your photo')
   const specText = await page.locator('main').innerText()
   check('The output spec is shown before the work runs', /WHAT WILL BE PRODUCED/i.test(specText))
-  check('It says where the numbers came from', /confirm against the notification/i.test(specText))
+  check('It says where the numbers came from', /please check against your form/i.test(specText))
 
   async function typeInto(locator, value) {
     await locator.click()
@@ -761,8 +767,8 @@ async function main() {
   await openTool(page, 'gov-exams/ssc-cgl')
   await page.waitForSelector('text=documents to prepare')
   const sscText = await page.locator('main').innerText()
-  check('Exam screen tells the user to confirm the numbers', /check these against your notification/i.test(sscText))
-  check('It names when the numbers were checked and against what', sscText.includes('September 2026') && sscText.includes('ssc.gov.in'))
+  check('Exam screen asks the user to check, without alarm', /please check them against your exam notification/i.test(sscText))
+  check('It says when the numbers were published', sscText.includes('September 2026'))
 
   // ---- Corrected specs: two exams were carrying SSC's numbers ----
   await openTool(page, 'gov-exams/dsssb')
@@ -788,6 +794,113 @@ async function main() {
   await page.waitForSelector('text=Maximum size', { timeout: 10000 })
   const pdfFromExam = await page.locator('header').innerText()
   check('A PDF picked from the exam route keeps the exam’s name', pdfFromExam.includes('SSC CGL') && pdfFromExam.includes('test-doc-heavy.pdf'))
+
+  // ---- The stated floor is remembered, not reinvented ----
+  // Reported from the device: UPSC presets 20 KB, and unticking then re-ticking
+  // the box turned it into 150 KB — half the 300 KB ceiling, because the editor
+  // kept no memory of what it had been given.
+  await openTool(page, 'gov-exams/upsc-cse')
+  await page.waitForSelector('text=documents to prepare')
+  await page.locator('text=Signature').first().click()
+  await page.waitForSelector('text=Add your signature')
+  const floorBox = page.getByLabel('This form also states a smallest size')
+  check('The floor starts off, not imposed', !(await floorBox.isChecked()))
+  const beforeTick = await page.locator('main').innerText()
+  check('The published floor is still named', /states 20 KB as the smallest/i.test(beforeTick), beforeTick.slice(0, 60).replace(/\n/g, ' '))
+  await floorBox.check()
+  await page.waitForTimeout(150)
+  const ticked = await page.getByLabel('Smallest allowed size in KB').inputValue()
+  check('Ticking restores the exam’s own floor', ticked === '20', `${ticked} KB`)
+  await floorBox.uncheck()
+  await floorBox.check()
+  await page.waitForTimeout(150)
+  const reticked = await page.getByLabel('Smallest allowed size in KB').inputValue()
+  check('Unticking and re-ticking does not invent one', reticked === '20', `${reticked} KB — was 150 before this fix`)
+
+  // ---- We do not argue with a number a commission published ----
+  await openTool(page, 'gov-exams/ssc-cgl')
+  await page.waitForSelector('text=documents to prepare')
+  await page.locator('text=Signature').first().click()
+  await page.waitForSelector('text=Add your signature')
+  const sigSetup = await page.locator('main').innerText()
+  check('SSC’s own 140×60 signature spec raises no alarm', !/can't be reached/i.test(sigSetup))
+  check('The header agrees with the card while the floor is off', (await page.locator('header').innerText()).includes('≤ 20 KB'))
+  await page.getByLabel('This form also states a smallest size').check()
+  await page.waitForTimeout(150)
+  check('And follows it once the floor is on', (await page.locator('header').innerText()).includes('10–20 KB'))
+  await page.getByLabel('This form also states a smallest size').uncheck()
+
+  // A floor the user types that no 140×60 image can reach — 8,400 pixels top
+  // out near 27 KB even as pure noise — is still caught.
+  await page.getByLabel('This form also states a smallest size').check()
+  await typeInto(page.getByLabel('Largest allowed size in KB'), 200)
+  await typeInto(page.getByLabel('Smallest allowed size in KB'), 100)
+  const typedFloor = await page.locator('main').innerText()
+  check('A typed floor that cannot work is still caught', /can't be reached/i.test(typedFloor), typedFloor.slice(0, 70).replace(/\n/g, ' '))
+
+  // ---- The exam screen informs rather than alarms ----
+  await openTool(page, 'gov-exams/ssc-cgl')
+  await page.waitForSelector('text=documents to prepare')
+  const examCopy = await page.locator('main').innerText()
+  check('The exam screen no longer warns', !/check these against your notification/i.test(examCopy) && /please check them against your exam notification/i.test(examCopy))
+  await openTool(page, 'gov-exams')
+  await page.waitForSelector('text=Pick your exam')
+  check('The list footer paragraph is gone', !/commissions do change them/i.test(await page.locator('main').innerText()))
+
+  // ---- The search icon no longer sits on its own placeholder ----
+  const padLeft = await page.evaluate(() =>
+    parseFloat(getComputedStyle(document.querySelector('input[aria-label="Search exams"]')).paddingLeft),
+  )
+  check('The search field leaves room for its icon', padLeft >= 36, `${padLeft}px`)
+
+  // ---- An exam of your own ----
+  await page.locator('button:has-text("My exam isn\'t listed")').click()
+  await page.waitForSelector('text=Which exam are you applying for?')
+  await page.getByLabel('Exam name').fill('State PSC')
+  await page.getByLabel('Photograph').check()
+  await page.waitForTimeout(150)
+  await typeInto(page.getByLabel('Width (px)'), 300)
+  await typeInto(page.getByLabel('Height (px)'), 400)
+  await typeInto(page.getByLabel('Largest allowed size in KB'), 80)
+  await page.getByLabel('Document (PDF)').check()
+  await page.locator('button:has-text("Save this exam")').click()
+  await page.waitForSelector('text=documents to prepare')
+  const customDetail = await page.locator('main').innerText()
+  check('A saved exam opens like a built-in one', customDetail.includes('300×400 px') && customDetail.includes('≤ 80 KB'), customDetail.slice(0, 60).replace(/\n/g, ' '))
+  check('Its PDF row carries a size but no pixels', /Document \(PDF\)/.test(customDetail) && /500 KB/.test(customDetail))
+
+  // it survives a reload, and it is searchable
+  await openTool(page, 'gov-exams')
+  await page.waitForSelector('text=Pick your exam')
+  check('It is listed after a reload', (await page.locator('text=State PSC').count()) > 0)
+  check('It is marked as the user’s own', (await page.locator('main').innerText()).includes('Added by you'))
+  await page.locator('input[aria-label="Search exams"]').fill('state')
+  await page.waitForTimeout(200)
+  check('It is searchable with the rest', (await page.locator('text=State PSC').count()) > 0 && (await page.locator('text=SSC CGL').count()) === 0)
+
+  // its photograph opens pre-filled and produces exactly those pixels
+  await page.locator('text=State PSC').first().click()
+  await page.waitForSelector('text=documents to prepare')
+  await page.locator('text=Photograph').first().click()
+  await page.waitForSelector('text=Add your photo')
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
+  await page.waitForSelector('text=Frame your photo')
+  await page.locator('button:has-text("Prepare photo")').click()
+  await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
+  const mine = await readPreparedPhoto(page)
+  check('A custom exam produces the size it was given', mine.width === 300 && mine.height === 400, `${mine.width}×${mine.height}`)
+  check('And stays inside the limit it was given', mine.bytes <= 80 * 1024, `${(mine.bytes / 1024).toFixed(1)} KB of 80 KB`)
+
+  // and it can be deleted
+  await openTool(page, 'gov-exams')
+  await page.waitForSelector('text=Pick your exam')
+  await page.locator('text=State PSC').first().click()
+  await page.waitForSelector('text=documents to prepare')
+  await page.locator('button:has-text("Edit numbers")').click()
+  await page.waitForSelector('text=Change the numbers')
+  await page.locator('button:has-text("Delete this exam")').click()
+  await page.waitForSelector('text=Pick your exam')
+  check('A custom exam can be deleted', (await page.locator('text=State PSC').count()) === 0)
 
   // ---- Resize Photo: a size limit applies to PNG as well as JPEG ----
   await openTool(page, 'resize-photo')

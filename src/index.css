@@ -147,17 +147,22 @@ input[type="number"] {
 }
 
 /* Field styling shared by every numeric requirement input. */
-.fr-field {
-  width: 100%;
-  border: 1px solid var(--line-strong);
-  background: var(--surface);
-  color: var(--ink);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-family: var(--font-mono);
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-  outline: none;
+/* In @layer components so a utility beats it. Unlayered, this padding won
+   against `pl-10` on the exam search box whatever the specificity, and the
+   magnifier ended up sitting on top of its own placeholder. */
+@layer components {
+  .fr-field {
+    width: 100%;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    color: var(--ink);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+    outline: none;
+  }
 }
 .fr-field:focus-visible {
   border-color: var(--accent);

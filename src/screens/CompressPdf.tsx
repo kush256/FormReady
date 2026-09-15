@@ -40,8 +40,11 @@ function formatEta(seconds: number): string {
 }
 
 export function CompressPdf() {
-  // Set when opened from an exam, so the screen says which form this is for.
-  const context = ((useLocation().state ?? null) as { context?: string } | null)?.context
+  // Set when opened from an exam: the form's name, and the limit it states
+  // where the user recorded one.
+  const opened = (useLocation().state ?? null) as { context?: string; targetBytes?: number } | null
+  const context = opened?.context
+  const askedBytes = opened?.targetBytes
   const [step, setStep] = useState<Step>('pick')
   const [file, setFile] = useState<File | null>(null)
   const [targetBytes, setTargetBytes] = useState(500 * 1024)
@@ -79,9 +82,14 @@ export function CompressPdf() {
     setError(null)
     const picked = files[0]
     setFile(picked)
-    // Default to half the original, which is a sane starting point and is
-    // never immediately invalid.
-    setTargetBytes(Math.max(MIN_TARGET_BYTES, Math.round(picked.size / 2)))
+    // The limit the form states, when we were told one and the file is over
+    // it. Otherwise half the original: a sane starting point that is never
+    // immediately invalid.
+    setTargetBytes(
+      askedBytes && askedBytes < picked.size
+        ? Math.max(MIN_TARGET_BYTES, askedBytes)
+        : Math.max(MIN_TARGET_BYTES, Math.round(picked.size / 2)),
+    )
     setStep('setup')
   }
 

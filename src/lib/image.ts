@@ -163,18 +163,28 @@ export function estimateSmallestJpegBytes(width: number, height: number): number
 }
 
 /**
- * Roughly the most a JPEG of these dimensions can weigh, at the encoder's best
- * setting. The mirror of the floor above, and needed for the same reason: a
- * form that demands a *minimum* size can ask for something the pixel count
- * cannot deliver, and no amount of re-encoding adds bytes that are not there.
+ * The most a JPEG of these dimensions could weigh, whatever it contains.
  *
- * Measured on this codebase: a flat, dark 200×230 screenshot lands at 0.19
- * bytes per pixel at quality 1.0, a detailed one at 0.39, and a photograph of a
- * person higher still. This errs generously high, because the cost of being
- * wrong is telling someone their requirement is impossible when it is not.
+ * The mirror of the floor above, and needed for the same reason: a form that
+ * demands a *minimum* size can ask for something the pixel count cannot
+ * deliver, and no amount of re-encoding adds bytes that are not there.
+ *
+ * It has to be a real ceiling rather than a typical value, because a figure
+ * that is merely typical condemns everything above it. Measured in Chromium at
+ * quality 1.0, bytes per pixel:
+ *
+ *   content            140×60   200×230   350×350
+ *   ink on white         0.41      0.26      0.16
+ *   photograph           1.89      1.65      1.64
+ *   noise                3.30      2.96      2.96
+ *
+ * The old figure of 0.9 sat below every photograph measured, and told an SSC
+ * candidate that the 10–20 KB band SSC itself publishes for a 140×60 signature
+ * was impossible. 3.3 is the entropy ceiling: nothing encodes above it, so
+ * nothing reachable is called unreachable.
  */
 export function estimateLargestJpegBytes(width: number, height: number): number {
-  return Math.max(4096, Math.round(width * height * 0.9))
+  return Math.max(4096, Math.round(width * height * 3.3))
 }
 
 export function canvasToBlob(

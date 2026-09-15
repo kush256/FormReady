@@ -11,6 +11,16 @@ interface Props {
   source?: string
   /** When the built-in numbers were last checked against published guidance. */
   checked?: string
+  /**
+   * The smallest size the form itself states, where it states one.
+   *
+   * Kept apart from `value.minKb` so that turning the floor off and on again
+   * gives back the published number. Deriving it from the ceiling instead
+   * turned UPSC's 20 KB into 150 KB on the second tick.
+   */
+  publishedMinKb?: number
+  /** Names the authority in the line about the floor, e.g. "UPSC Civil Services". */
+  publishedBy?: string
 }
 
 const KB = 1024
@@ -19,14 +29,28 @@ const KB = 1024
  * The output spec, shown and editable at the last moment before the work runs.
  *
  * Every number in this app that came from us rather than from the user is a
- * guess about a document we cannot see: commissions move these between cycles,
- * and a stale figure produces a file that is rejected without saying why. So
- * the numbers are never final until the user has looked at them — they sit on
- * the screen where the photo is framed, with the source named, and anything can
- * be changed before a single pixel is encoded.
+ * guess about a document we cannot see: commissions move these between
+ * notifications, and a stale figure produces a file that is rejected without
+ * saying why. So the numbers are never final until the user has looked at them —
+ * they sit on the screen where the photo is framed, with the source named, and
+ * anything can be changed before a single pixel is encoded.
+ *
+ * What it does *not* do is argue with them. A commission publishes its band
+ * after its own research; when our arithmetic disagrees with a number a board
+ * printed, our arithmetic is what is suspect. Validation therefore runs only
+ * once the user has changed something, or on the two cases that are wrong
+ * whoever typed them.
  */
-export function SpecEditor({ value, onChange, format = 'jpeg', source, checked }: Props) {
-  const issue = validateRequirement(value, format)
+export function SpecEditor({
+  value,
+  onChange,
+  format = 'jpeg',
+  source,
+  checked,
+  publishedMinKb,
+  publishedBy,
+}: Props) {
+  const issue = shouldValidate(value, publishedMinKb) ? validateRequirement(value, format) : null
 
   function set(patch: Partial<ImageRequirement>) {
     onChange({ ...value, ...patch })
@@ -86,13 +110,18 @@ export function SpecEditor({ value, onChange, format = 'jpeg', source, checked }
               checked={value.minKb !== undefined}
               aria-label="This form also states a smallest size"
               onChange={(e) =>
-                set({ minKb: e.target.checked ? Math.max(1, Math.round(value.maxKb / 2)) : undefined })
+                set({
+                  // Back to the published figure, not to a fresh guess.
+                  minKb: e.target.checked
+                    ? (publishedMinKb ?? Math.max(1, Math.round(value.maxKb / 2)))
+                    : undefined,
+                })
               }
               className="h-4 w-4 accent-[var(--accent)]"
             />
             <span className="text-sm font-semibold text-[var(--ink)]">The form also states a smallest size</span>
           </label>
-          {value.minKb !== undefined && (
+          {value.minKb !== undefined ? (
             <div className="mt-2">
               <SizeField
                 label="Smallest allowed size"
@@ -100,20 +129,22 @@ export function SpecEditor({ value, onChange, format = 'jpeg', source, checked }
                 onChange={(bytes) => set({ minKb: Math.max(1, Math.round(bytes / KB)) })}
               />
             </div>
+          ) : (
+            publishedMinKb !== undefined && (
+              // Off by default, but the published floor stays in view rather
+              // than disappearing with the tick.
+              <p className="mt-2 text-xs leading-relaxed text-[var(--ink-2)]">
+                {publishedBy ?? 'This form'} states {publishedMinKb} KB as the smallest it accepts. Tick to check
+                against it.
+              </p>
+            )
           )}
-          {/* A floor is the half of the spec every other tool ignores, and the
-              half that gets a form rejected without explaining why. */}
-          <p className="mt-2 text-xs leading-relaxed text-[var(--ink-2)]">
-            Many forms state a band — 20–50 KB, say. A file under the floor is rejected as firmly as one over the
-            ceiling.
-          </p>
         </div>
       </div>
 
       <p className="text-xs leading-relaxed text-[var(--ink-3)]">
-        {source ? `These numbers follow ${source}` : 'These numbers are a starting point'}
-        {checked ? `, checked in ${checked}` : ''}. Commissions do change them between cycles — confirm against the
-        notification you are applying under, and edit anything that differs.
+        {source ? `From ${source}` : 'A starting point'}
+        {checked ? `, ${checked}` : ''}. Please check against your form and edit anything that differs.
       </p>
 
       {issue && (
@@ -126,4 +157,19 @@ export function SpecEditor({ value, onChange, format = 'jpeg', source, checked }
       )}
     </div>
   )
+}
+
+/**
+ * Whether this spec is ours to question.
+ *
+ * A floor the user switched on themselves, or any dimension or ceiling they
+ * typed, can be checked freely. A floor a board published is reported as it
+ * stands — with one exception on each side: a floor at or above the ceiling
+ * satisfies nothing, and dimensions outside what a canvas can sensibly produce
+ * fail whoever entered them.
+ */
+function shouldValidate(value: ImageRequirement, publishedMinKb?: number): boolean {
+  if (value.minKb === undefined) return true
+  if (value.minKb >= value.maxKb) return true
+  return value.minKb !== publishedMinKb
 }
