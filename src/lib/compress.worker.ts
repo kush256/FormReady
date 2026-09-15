@@ -1,11 +1,5 @@
 /// <reference lib="webworker" />
-import {
-  compressPdf,
-  isCancellation,
-  PdfTooLargeError,
-  type CompressPdfResult,
-  type CompressProgress,
-} from './pdf'
+import { compressPdf, isCancellation, type CompressPdfResult, type CompressProgress } from './pdf'
 
 /**
  * Compression, off the main thread.
@@ -32,7 +26,11 @@ export type FromWorker =
   | { kind: 'progress'; progress: CompressProgress }
   | { kind: 'done'; bytes: ArrayBuffer; summary: CompressSummary }
   | { kind: 'cancelled' }
-  | { kind: 'failed'; message: string; tooLarge: boolean }
+  // The name of whichever error class pdf.ts raised — PdfTooLargeError,
+  // PdfPasswordError, PdfDamagedError, or the generic PdfCompressionError —
+  // so the screen can rebuild the right one instead of collapsing every
+  // failure into a single flag.
+  | { kind: 'failed'; message: string; name: string }
 
 const scope = self as unknown as DedicatedWorkerGlobalScope
 
@@ -71,7 +69,7 @@ scope.onmessage = async (event: MessageEvent<ToWorker>) => {
     scope.postMessage({
       kind: 'failed',
       message: e instanceof Error ? e.message : 'Compression failed.',
-      tooLarge: e instanceof PdfTooLargeError,
+      name: e instanceof Error ? e.name : 'Error',
     } satisfies FromWorker)
   } finally {
     controller = null

@@ -11,12 +11,7 @@ import { Notice } from '../components/Notice'
 import { EmptyState } from '../components/EmptyState'
 import { CompressIllustration } from '../components/Illustrations'
 import { pickPdfs } from '../lib/picker'
-import {
-  isCancellation,
-  PdfTooLargeError,
-  type CompressProgress,
-  type CompressPdfResult,
-} from '../lib/pdf'
+import { isCancellation, type CompressProgress, type CompressPdfResult } from '../lib/pdf'
 import { runCompression } from '../lib/compressClient'
 import { askToNotify, keepWorking, notifyDone, stopKeepingWorking } from '../lib/background'
 import { formatBytes } from '../lib/format'
@@ -120,13 +115,12 @@ export function CompressPdf() {
     } catch (e) {
       if (isCancellation(e)) {
         setStep('setup')
-      } else if (e instanceof PdfTooLargeError) {
-        setError(
-          'This PDF is too large for this device to compress in one go. Try splitting it into smaller parts first, then compressing each part.',
-        )
-        setStep('setup')
       } else {
-        setError('Could not compress this PDF. It may be encrypted or damaged.')
+        // The real cause, not a guess at one: PdfTooLargeError,
+        // PdfPasswordError and PdfDamagedError all carry their own honest
+        // message now, and anything else keeps whatever pdf.js or pdf-lib
+        // actually said rather than being flattened into "too large".
+        setError(e instanceof Error ? e.message : 'Could not compress this PDF.')
         setStep('setup')
       }
     } finally {

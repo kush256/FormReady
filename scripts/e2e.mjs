@@ -660,6 +660,55 @@ async function main() {
   const hugeSizes = [...hugeText.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
   check('Large file actually shrank', hugeSizes.length >= 2 && hugeSizes[1] < hugeSizes[0], JSON.stringify(hugeSizes))
 
+  // ---- The reported case: a real 44 MB scan, refused as "too large" ----
+  // The message was a catch-all wearing a diagnosis: both throw sites in
+  // compressPdf swallowed whatever pdf.js or pdf-lib actually said and
+  // reported "too large" regardless of the real cause. This is the file size
+  // that was refused; it must succeed now, and quickly, not just eventually.
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-45mb.pdf`])
+  await page.waitForSelector('text=Maximum size', { timeout: 30000 })
+  await page.getByRole('button', { name: 'MB', exact: true }).click()
+  const bigField = page.locator('input[inputmode="decimal"]').first()
+  await bigField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('30')
+  await page.locator('body').click()
+  await page.waitForTimeout(200)
+  const tBig = Date.now()
+  await page.locator('button:has-text("Compress PDF")').click()
+  await page.waitForSelector('button:has-text("Save to device")', { timeout: 120000 })
+  const bigMs = Date.now() - tBig
+  console.log(`      44 MB scan -> 30 MB target took ${(bigMs / 1000).toFixed(1)}s`)
+  check(
+    'A 44 MB file is no longer refused as too large',
+    (await page.locator('main').innerText()).includes('Meets every requirement'),
+    `${(bigMs / 1000).toFixed(1)}s`,
+  )
+
+  // ---- Errors say what actually went wrong, not "too large" for everything ----
+  // Two catch-alls used to flatten any failure — a locked file, a damaged
+  // file, a bug of our own — into the same size-shaped message.
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-locked.pdf`])
+  await page.waitForSelector('text=Maximum size', { timeout: 15000 })
+  await page.locator('button:has-text("Compress PDF")').click()
+  await page.waitForTimeout(2000)
+  const lockedText = await page.locator('main').innerText()
+  check('A password-protected PDF names the password, not the size', /password/i.test(lockedText) && !/too large/i.test(lockedText), lockedText.slice(0, 90).replace(/\n/g, ' '))
+
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-corrupt.pdf`])
+  await page.waitForSelector('text=Maximum size', { timeout: 15000 })
+  await page.locator('button:has-text("Compress PDF")').click()
+  await page.waitForTimeout(2000)
+  const corruptText = await page.locator('main').innerText()
+  check('A damaged PDF names the damage, not the size', /damaged|could not be read/i.test(corruptText) && !/too large/i.test(corruptText), corruptText.slice(0, 90).replace(/\n/g, ' '))
+
   // ---- Tight target: the reported "restarted at zero" case ----
   // A limit the first pass cannot reach on its own used to trigger a second
   // render of every page, which reset the page counter to 1 and, on a phone,

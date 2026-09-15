@@ -357,4 +357,175 @@ async function scannedPdf(name, pages) {
 await scannedPdf('test-doc-scan.pdf', 10)
 await hugePdf('test-doc-huge.pdf', 41)
 
+/**
+ * A file broken in a way that has nothing to do with size, so the message a
+ * user sees can be checked against the real cause rather than "too large" by
+ * default. Truncating mid-object breaks the xref table every reader needs to
+ * find anything at all — pdf.js reports this as InvalidPDFException, not an
+ * allocation failure.
+ */
+async function corruptedPdf(name) {
+  const doc = await PDFDocument.create()
+  const font = await doc.embedFont(StandardFonts.Helvetica)
+  for (let i = 0; i < 40; i++) {
+    const pg = doc.addPage([400, 400])
+    pg.drawText(`This will not survive. Page ${i + 1}.`, { x: 40, y: 200, size: 16, font })
+  }
+  const bytes = await doc.save()
+  // Enough of the file survives to clear the app's own minimum-target check,
+  // but the xref table every reader needs is gone.
+  const truncated = bytes.slice(0, Math.max(8 * 1024, Math.floor(bytes.byteLength * 0.6)))
+  fs.writeFileSync(path.join(OUT, name), truncated)
+  console.log('wrote', name, (truncated.byteLength / 1024).toFixed(1), 'KB (truncated, deliberately unreadable)')
+}
+
+/**
+ * The standard 40-bit RC4 security handler (PDF 1.7 spec, Algorithm 3.2–3.4),
+ * built from Node's own crypto rather than a dependency, since pdf-lib cannot
+ * write an encrypted file at all. Deliberately minimal: the one page's
+ * content stream is empty, so nothing on the page itself ever needs to be
+ * RC4-encrypted — only the /O and /U values have to be right, which is what
+ * makes pdf.js demand a password before it will read anything.
+ */
+async function encryptedPdf(name, userPassword) {
+  const crypto = await import('node:crypto')
+  const PAD = Buffer.from([
+    0x28, 0xbf, 0x4e, 0x5e, 0x4e, 0x75, 0x8a, 0x41, 0x64, 0x00, 0x4e, 0x56, 0xff, 0xfa, 0x01, 0x08, 0x2e, 0x2e, 0x00,
+    0xb6, 0xd0, 0x68, 0x3e, 0x80, 0x2f, 0x0c, 0xa9, 0xfe, 0x64, 0x53, 0x69, 0x7a,
+  ])
+  const pad = (pw) => {
+    const buf = Buffer.alloc(32)
+    const pwBuf = Buffer.from(pw, 'latin1').subarray(0, 32)
+    pwBuf.copy(buf)
+    PAD.copy(buf, pwBuf.length, 0, 32 - pwBuf.length)
+    return buf
+  }
+  // Node's OpenSSL 3 disables RC4 in its default provider, and this file
+  // needs no other cipher, so the (tiny) algorithm is written out directly.
+  const rc4 = (key, data) => {
+    const s = new Uint8Array(256)
+    for (let i = 0; i < 256; i++) s[i] = i
+    let j = 0
+    for (let i = 0; i < 256; i++) {
+      j = (j + s[i] + key[i % key.length]) & 0xff
+      ;[s[i], s[j]] = [s[j], s[i]]
+    }
+    const out = Buffer.alloc(data.length)
+    let i = 0
+    j = 0
+    for (let k = 0; k < data.length; k++) {
+      i = (i + 1) & 0xff
+      j = (j + s[i]) & 0xff
+      ;[s[i], s[j]] = [s[j], s[i]]
+      out[k] = data[k] ^ s[(s[i] + s[j]) & 0xff]
+    }
+    return out
+  }
+  const md5 = (buf) => crypto.default.createHash('md5').update(buf).digest()
+
+  const fileId = crypto.default.randomBytes(16)
+  const paddedUser = pad(userPassword)
+  const ownerKey = md5(pad(userPassword)).subarray(0, 5) // owner password == user password here; only the refusal matters
+  const O = rc4(ownerKey, paddedUser)
+  const P = Buffer.alloc(4)
+  P.writeInt32LE(-3904, 0) // an unremarkable permission set
+  const fileKey = md5(Buffer.concat([paddedUser, O, P, fileId])).subarray(0, 5)
+  const U = rc4(fileKey, PAD)
+
+  const hex = (buf) => `<${buf.toString('hex')}>`
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>',
+    '<< /Length 0 >>\nstream\n\nendstream',
+    `<< /Filter /Standard /V 1 /R 2 /O ${hex(O)} /U ${hex(U)} /P ${P.readInt32LE(0)} >>`,
+  ]
+
+  let out = '%PDF-1.4\n%' + '~'.repeat(20000) + '\n'
+  const offsets = [0]
+  objects.forEach((body, i) => {
+    offsets.push(Buffer.byteLength(out, 'latin1'))
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`
+  })
+  const xrefStart = Buffer.byteLength(out, 'latin1')
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (let i = 1; i <= objects.length; i++) out += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Encrypt 5 0 R /ID [${hex(fileId)} ${hex(fileId)}] >>\nstartxref\n${xrefStart}\n%%EOF`
+
+  fs.writeFileSync(path.join(OUT, name), Buffer.from(out, 'latin1'))
+  console.log('wrote', name, 'requires a password this app is never given')
+}
+
+await corruptedPdf('test-doc-corrupt.pdf')
+await encryptedPdf('test-doc-locked.pdf', 'sc4nn3r')
+// Matches the reported failure (a 42 MB scanned book) closely enough to be
+// the regression test for it, cheap enough (~10s) to generate every run.
+await hugePdfBatched('test-doc-45mb.pdf', 180, 45)
+
+/**
+ * The reported case, and the search for where compressing genuinely stops
+ * working on this machine. Image-heavy, since that's what makes a real PDF
+ * this large — a book of dense text alone would never reach these sizes.
+ * Rendered in batches so the browser tab isn't asked to hold hundreds of
+ * full-resolution canvases in memory at once, which would just move the
+ * problem this fixture exists to find.
+ */
+async function hugePdfBatched(name, pages, targetMb) {
+  const doc = await PDFDocument.create()
+  const BATCH = 20
+  const t0 = Date.now()
+  for (let start = 0; start < pages; start += BATCH) {
+    const count = Math.min(BATCH, pages - start)
+    const dataUrls = await page.evaluate(
+      ({ count, start }) => {
+        const out = []
+        for (let i = 0; i < count; i++) {
+          const canvas = document.createElement('canvas')
+          canvas.width = 1000
+          canvas.height = 1400
+          const ctx = canvas.getContext('2d')
+          const image = ctx.createImageData(canvas.width, canvas.height)
+          const data = image.data
+          let state = (start + i + 1) * 2654435761
+          for (let p = 0; p < data.length; p += 4) {
+            state = (state * 1103515245 + 12345) & 0x7fffffff
+            data[p] = state & 0xff
+            data[p + 1] = (state >> 8) & 0xff
+            data[p + 2] = (state >> 16) & 0xff
+            data[p + 3] = 255
+          }
+          ctx.putImageData(image, 0, 0)
+          ctx.filter = 'blur(1.5px)'
+          ctx.drawImage(canvas, 0, 0)
+          ctx.filter = 'none'
+          out.push(canvas.toDataURL('image/jpeg', 0.82))
+          canvas.width = 0
+          canvas.height = 0
+        }
+        return out
+      },
+      { count, start },
+    )
+    for (const dataUrl of dataUrls) {
+      const bytes = Buffer.from(dataUrl.split(',')[1], 'base64')
+      const embedded = await doc.embedJpg(bytes)
+      const pdfPage = doc.addPage([595, 842])
+      pdfPage.drawImage(embedded, { x: 0, y: 0, width: 595, height: 842 })
+    }
+    console.log(
+      `  ${name}: ${start + count}/${pages} pages (${((Date.now() - t0) / 1000).toFixed(0)}s)`,
+    )
+  }
+  const out = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), out)
+  console.log(
+    'wrote',
+    name,
+    (out.byteLength / 1024 / 1024).toFixed(1),
+    'MB',
+    `(${pages} pages, target ~${targetMb}MB, ${((Date.now() - t0) / 1000).toFixed(0)}s)`,
+  )
+}
+
+// ~250 KB/page measured from test-doc-huge.pdf (41 pages -> 10 MB).
 await browser.close()

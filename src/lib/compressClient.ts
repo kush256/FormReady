@@ -1,9 +1,4 @@
-import {
-  compressPdf,
-  PdfTooLargeError,
-  type CompressPdfResult,
-  type CompressProgress,
-} from './pdf'
+import { compressPdf, type CompressPdfResult, type CompressProgress } from './pdf'
 import { canUseOffscreen } from './surface'
 import type { FromWorker, ToWorker } from './compress.worker'
 
@@ -64,9 +59,16 @@ export function runCompression(
           worker.terminate()
           return
         }
-        case 'failed':
-          reject(message.tooLarge ? new PdfTooLargeError() : new Error(message.message))
+        case 'failed': {
+          // The screen reads `.message`, whichever of PdfTooLargeError,
+          // PdfPasswordError, PdfDamagedError or the generic case this was —
+          // only the text has to survive the crossing, not the class.
+          const failure = new Error(message.message)
+          failure.name = message.name
+          reject(failure)
           worker.terminate()
+          return
+        }
       }
     }
     worker.onerror = (event) => {
