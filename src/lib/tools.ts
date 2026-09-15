@@ -2,7 +2,6 @@ import type { ComponentType, SVGProps } from 'react'
 import {
   SignatureIcon,
   ImageToPdfIcon,
-  ResizeIcon,
   CompressPdfIcon,
   MergePdfIcon,
   SplitPdfIcon,
@@ -33,13 +32,6 @@ export const QUICK_TOOLS: ToolDef[] = [
     name: 'Image to PDF',
     description: 'Photos into one PDF',
     icon: ImageToPdfIcon,
-  },
-  {
-    id: 'resize-photo',
-    path: '/resize-photo',
-    name: 'Resize Photo',
-    description: 'Set exact dimensions',
-    icon: ResizeIcon,
   },
   {
     id: 'compress-pdf',

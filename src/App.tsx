@@ -6,7 +6,6 @@ import { hasOnboarded } from './lib/onboarding'
 const SmartPhoto = lazy(() => import('./screens/SmartPhoto').then((m) => ({ default: m.SmartPhoto })))
 const SignatureMaker = lazy(() => import('./screens/SignatureMaker').then((m) => ({ default: m.SignatureMaker })))
 const ImageToPdf = lazy(() => import('./screens/ImageToPdf').then((m) => ({ default: m.ImageToPdf })))
-const ResizePhoto = lazy(() => import('./screens/ResizePhoto').then((m) => ({ default: m.ResizePhoto })))
 const CompressPdf = lazy(() => import('./screens/CompressPdf').then((m) => ({ default: m.CompressPdf })))
 const MergePdf = lazy(() => import('./screens/MergePdf').then((m) => ({ default: m.MergePdf })))
 const SplitPdf = lazy(() => import('./screens/SplitPdf').then((m) => ({ default: m.SplitPdf })))
@@ -42,7 +41,6 @@ function App() {
             <Route path="/smart-photo" element={<SmartPhoto />} />
             <Route path="/signature-maker" element={<SignatureMaker />} />
             <Route path="/image-to-pdf" element={<ImageToPdf />} />
-            <Route path="/resize-photo" element={<ResizePhoto />} />
             <Route path="/compress-pdf" element={<CompressPdf />} />
             <Route path="/merge-pdf" element={<MergePdf />} />
             <Route path="/split-pdf" element={<SplitPdf />} />

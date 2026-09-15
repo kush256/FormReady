@@ -80,7 +80,7 @@ async function main() {
   // ---- Home ----
   await page.goto(BASE)
   await page.waitForSelector('text=FormReady')
-  for (const name of ['Smart Photo', 'Signature Maker', 'Image to PDF', 'Resize Photo', 'Compress PDF', 'Merge PDF', 'Split PDF']) {
+  for (const name of ['Smart Photo', 'Signature Maker', 'Image to PDF', 'Compress PDF', 'Merge PDF', 'Split PDF']) {
     check(`Home lists ${name}`, (await page.locator(`text=${name}`).count()) > 0)
   }
   check('Privacy footer intact', (await page.locator('text=Processed privately on your device').count()) > 0)
@@ -916,35 +916,6 @@ async function main() {
   await page.locator('button:has-text("Delete this exam")').click()
   await page.waitForSelector('text=Pick your exam')
   check('A custom exam can be deleted', (await page.locator('text=State PSC').count()) === 0)
-
-  // ---- Resize Photo: a size limit applies to PNG as well as JPEG ----
-  await openTool(page, 'resize-photo')
-  await page.waitForSelector('text=Resize Photo')
-  await page.getByRole('button', { name: 'PNG', exact: true }).click()
-  const pngLimit = page.locator('input[type="checkbox"]').first()
-  check('Size limit is offered for PNG', await pngLimit.isEnabled())
-  await pngLimit.check()
-  const pngKb = page.getByLabel('Maximum size in KB')
-  await pngKb.click()
-  await page.keyboard.press('Control+a')
-  await page.keyboard.press('Backspace')
-  await page.keyboard.type('60')
-  await page.locator('body').click()
-  await page.locator('button:has-text("Continue")').click()
-  await page.waitForSelector('text=Add your photo')
-  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-1.jpg`])
-  await page.waitForSelector('text=Frame your photo')
-  await page.locator('button:has-text("Resize photo")').click()
-  await page.waitForSelector('text=Your photo is ready', { timeout: 30000 })
-  const pngResult = await page.locator('main').innerText()
-  check('PNG honours the size limit', pngResult.includes('Meets every requirement'), pngResult.split('\n')[0])
-  check('PNG result is still a PNG', pngResult.includes('PNG'))
-  check('PNG explains how it reached the size', pngResult.includes('Colours were reduced'))
-  const pngBytes = await page.evaluate(() => {
-    const img = document.querySelector('main img[alt="Prepared result"]')
-    return img ? fetch(img.src).then((r) => r.blob()).then((b) => b.size) : 0
-  })
-  check(`PNG landed under 60 KB (${Math.round(pngBytes / 1024)} KB)`, pngBytes > 0 && pngBytes <= 60 * 1024, `${pngBytes} bytes`)
 
   // ---- Signing on the screen ----
   await openTool(page, 'signature-maker')
