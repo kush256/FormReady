@@ -52,12 +52,23 @@ export function SplitPdf() {
   const [rangeInput, setRangeInput] = useState('')
   /** Sits under the field itself: a typo needs answering where it was typed. */
   const [rangeError, setRangeError] = useState<string | null>(null)
+  const gridRef = useRef<HTMLDivElement | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
 
   // The open document holds a pdf.js worker; drop it when the screen goes.
   const openDoc = useRef<PageThumbnails | null>(null)
   useEffect(() => () => openDoc.current?.close(), [])
+
+  /**
+   * Brings a page into view.
+   *
+   * Every tile is mounted from the start — only its picture is drawn lazily —
+   * so the one to scroll to is always there to be found.
+   */
+  function showPage(index: number) {
+    gridRef.current?.querySelector(`[data-page="${index}"]`)?.scrollIntoView({ block: 'center' })
+  }
 
   async function pick() {
     const files = await pickPdfs(false)
@@ -73,7 +84,10 @@ export function SplitPdf() {
       setFile(f)
       setBytes(buf)
       setPages(thumbnails)
-      setSelected(new Set(Array.from({ length: thumbnails.pageCount }, (_, i) => i)))
+      // Nothing selected to begin with. The screen offers to "pick only the
+      // pages you need", and opening with all 615 of a book already ticked
+      // made the default action a copy of the file the user already has.
+      setSelected(new Set())
       setStep('select')
     } catch {
       setError('Could not open this PDF. It may be encrypted or corrupted.')
@@ -106,6 +120,9 @@ export function SplitPdf() {
     // than letting the count quietly disagree with what was typed.
     setRangeError(bad.length ? `Selected ${pages.size}. Ignored ${bad.join(', ')}.` : null)
     setSelected(pages)
+    // Typing 500-510 at the top of a 615-page book changed a number and
+    // nothing else: the pages it chose were a hundred and sixty rows down.
+    showPage(Math.min(...pages))
   }
 
   async function generate() {
@@ -221,7 +238,7 @@ export function SplitPdf() {
 
         {step === 'select' && (
           <>
-            <div className="grid grid-cols-3 gap-3">
+            <div ref={gridRef} className="grid grid-cols-3 gap-3">
               {pages &&
                 Array.from({ length: pageCount }, (_, i) => (
                   <PageThumb key={i} index={i} source={pages} selected={selected.has(i)} onToggle={() => toggle(i)} />

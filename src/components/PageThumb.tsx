@@ -8,6 +8,20 @@ interface Props {
   onToggle: () => void
 }
 
+/** Start drawing a screenful early, so pages are usually ready on arrival. */
+const DRAW_MARGIN = '400px 0px'
+/**
+ * Hold the picture until it is this far behind, then let it go.
+ *
+ * Every thumbnail this component had ever drawn used to stay in its state for
+ * the life of the screen. Measured at 15.3 KB apiece, a 615-page book scrolled
+ * through end to end was holding around 9 MB of pictures it was no longer
+ * showing — the same shape as the memory exhaustion that forced a restart in
+ * Smart Photo. Six screenfuls of slack means scrolling back rarely shows the
+ * number again, and `openPageThumbnails` caches the redraw anyway.
+ */
+const KEEP_MARGIN = '2000px 0px'
+
 /**
  * One page in the picker grid. It shows its number and shape straight away and
  * asks for its picture only once it has scrolled into view, so opening a long
@@ -16,20 +30,29 @@ interface Props {
 export function PageThumb({ index, source, selected, onToggle }: Props) {
   const [url, setUrl] = useState<string | null>(null)
   const ref = useRef<HTMLButtonElement | null>(null)
+  // Read inside the observers, which outlive any one render.
+  const drawn = useRef(false)
+  const asking = useRef(false)
 
   useEffect(() => {
     const element = ref.current
-    if (!element || url) return
+    if (!element) return
 
     let cancelled = false
     const request = () => {
+      if (cancelled || drawn.current || asking.current) return
+      asking.current = true
       source
         .get(index)
         .then((value) => {
-          if (!cancelled) setUrl(value)
+          asking.current = false
+          if (cancelled) return
+          drawn.current = true
+          setUrl(value)
         })
         .catch(() => {
           // A page that won't render still stays selectable by its number.
+          asking.current = false
         })
     }
 
@@ -40,27 +63,35 @@ export function PageThumb({ index, source, selected, onToggle }: Props) {
       }
     }
 
-    const observer = new IntersectionObserver(
+    const draw = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          observer.disconnect()
-          request()
+        if (entries.some((e) => e.isIntersecting)) request()
+      },
+      { rootMargin: DRAW_MARGIN },
+    )
+    const keep = new IntersectionObserver(
+      (entries) => {
+        if (drawn.current && entries.every((e) => !e.isIntersecting)) {
+          drawn.current = false
+          setUrl(null)
         }
       },
-      // Start a screenful early so pages are usually drawn before they arrive.
-      { rootMargin: '400px 0px' },
+      { rootMargin: KEEP_MARGIN },
     )
-    observer.observe(element)
+    draw.observe(element)
+    keep.observe(element)
     return () => {
       cancelled = true
-      observer.disconnect()
+      draw.disconnect()
+      keep.disconnect()
     }
-  }, [index, source, url])
+  }, [index, source])
 
   return (
     <button
       ref={ref}
       onClick={onToggle}
+      data-page={index}
       aria-pressed={selected}
       aria-label={`Page ${index + 1}`}
       className={`relative block overflow-hidden rounded-lg border-2 bg-[var(--surface-sunk)] ${

@@ -420,6 +420,10 @@ async function main() {
   await page.waitForSelector('text=Extract PDF pages')
   await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-big.pdf`])
   await page.waitForSelector('text=of 6 selected', { timeout: 30000 })
+  // "Pick only the pages you need" — so it opens with none of them ticked,
+  // where it used to open with every page of a 615-page book already on.
+  check('A document opens with nothing selected', (await page.locator('header').innerText()).includes('0 of 6 selected'))
+  check('The button says what to do rather than counting to zero', (await page.locator('button:has-text("Select pages to extract")').count()) === 1)
   await page.locator('input[placeholder*="1-3"]').fill('2-4')
   await page.locator('button:has-text("Apply")').click()
   await page.waitForSelector('text=3 of 6 selected')
@@ -493,6 +497,38 @@ async function main() {
   await page.locator('input[aria-label="Pages to select, by number"]').press('Enter')
   await page.waitForSelector('text=3 of 300 selected')
   check('Enter applies the range, not just the Apply button', true)
+
+  // ---- A range applied from far away brings its pages into view ----
+  // 250-252 sits about eighty rows below the fold; changing a number and
+  // leaving the user where they were reads as nothing having happened.
+  await page.locator('input[aria-label="Pages to select, by number"]').fill('250-252')
+  await page.locator('input[aria-label="Pages to select, by number"]').press('Enter')
+  await page.waitForSelector('text=3 of 300 selected')
+  await page.waitForTimeout(400)
+  const firstPicked = await page.locator('[data-page="249"]').boundingBox()
+  check(
+    'Applying a far-off range scrolls to it',
+    firstPicked !== null && firstPicked.y > 0 && firstPicked.y < view.height,
+    firstPicked ? `y=${Math.round(firstPicked.y)} of ${view.height}` : 'not rendered',
+  )
+
+  // ---- Thumbnails are let go once they are well out of sight ----
+  // Measured at 15.3 KB each, a document scrolled end to end used to hold
+  // every page it had ever drawn: about 9 MB on a 615-page book.
+  for (let i = 0; i < 40; i++) {
+    await page.mouse.wheel(0, 1200)
+    await page.waitForTimeout(80)
+  }
+  await page.waitForTimeout(2500)
+  const held = await page.evaluate(() => {
+    const imgs = [...document.querySelectorAll('main .grid img')]
+    return { count: imgs.length, kb: Math.round(imgs.reduce((n, im) => n + im.src.length, 0) / 1024) }
+  })
+  check(
+    `Drawn pages are released behind you (${held.count} held, ${held.kb} KB)`,
+    held.count > 0 && held.count < 90,
+    `${held.count} of 300 still drawn`,
+  )
   // The selected state has to carry across the whole tile: a 2px border on a
   // white page is slow to read in a grid of forty.
   const wash = await page.evaluate(() => {

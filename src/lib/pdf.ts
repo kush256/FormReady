@@ -48,6 +48,15 @@ export interface PageThumbnails {
  * and they usually only wanted page 4. Opening the document is nearly free, so
  * the grid can appear immediately and fill itself in as the user scrolls.
  */
+/**
+ * How many drawn pages to keep.
+ *
+ * At a measured 15.3 KB each, this is about 4 MB however long the document is.
+ * Past this the oldest go: redrawing one costs a few milliseconds, where an
+ * uncapped map on a 615-page book grew until the WebView ran out of room.
+ */
+const THUMBNAIL_CACHE = 240
+
 export async function openPageThumbnails(
   bytes: Uint8Array,
   maxWidth = 220,
@@ -92,7 +101,12 @@ export async function openPageThumbnails(
     aspectRatio,
     get(index: number): Promise<string> {
       const cached = cache.get(index)
-      if (cached) return Promise.resolve(cached)
+      if (cached) {
+        // Re-insert so the pages being looked at are the last to be dropped.
+        cache.delete(index)
+        cache.set(index, cached)
+        return Promise.resolve(cached)
+      }
       const running = inFlight.get(index)
       if (running) return running
 
@@ -100,6 +114,11 @@ export async function openPageThumbnails(
         if (closed) throw new Error('This document is closed.')
         const url = await render(index)
         cache.set(index, url)
+        while (cache.size > THUMBNAIL_CACHE) {
+          const oldest = cache.keys().next().value
+          if (oldest === undefined) break
+          cache.delete(oldest)
+        }
         inFlight.delete(index)
         return url
       })
