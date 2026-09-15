@@ -12,12 +12,13 @@ import { EmptyState } from '../components/EmptyState'
 import { CompressIllustration } from '../components/Illustrations'
 import { pickPdfs } from '../lib/picker'
 import {
-  compressPdf,
   isCancellation,
   PdfTooLargeError,
   type CompressProgress,
   type CompressPdfResult,
 } from '../lib/pdf'
+import { runCompression } from '../lib/compressClient'
+import { askToNotify, keepWorking, notifyDone, stopKeepingWorking } from '../lib/background'
 import { formatBytes } from '../lib/format'
 import { bytesToBlob } from '../lib/bytes'
 
@@ -52,7 +53,7 @@ export function CompressPdf() {
   const [progress, setProgress] = useState<CompressProgress | null>(null)
   const [result, setResult] = useState<CompressPdfResult | null>(null)
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
+  const cancelRef = useRef<(() => void) | null>(null)
 
   // Everything the user could get wrong, caught before any work happens.
   const issue = useMemo(() => {
@@ -95,19 +96,27 @@ export function CompressPdf() {
 
   async function process() {
     if (!file || issue) return
-    const controller = new AbortController()
-    abortRef.current = controller
     setProgress(null)
     setStep('working')
+    // Asked here rather than on first launch, so the request arrives with an
+    // obvious reason attached to it.
+    void askToNotify()
+    const name = file.name
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const outcome = await compressPdf(bytes, targetBytes, {
-        signal: controller.signal,
-        onProgress: setProgress,
+      const run = runCompression(bytes, targetBytes, (update) => {
+        setProgress(update)
+        // The ongoing notification is the price of being allowed to keep
+        // working off screen, so it carries the progress rather than nothing.
+        void keepWorking('Compressing your PDF', name, Math.round(update.fraction * 100))
       })
+      cancelRef.current = run.cancel
+      void keepWorking('Compressing your PDF', name, 0)
+      const outcome = await run.result
       setResult(outcome)
       setResultBlob(bytesToBlob(outcome.bytes, 'application/pdf'))
       setStep('result')
+      void notifyDone('Your PDF is ready', `${name} is compressed and waiting in the app.`)
     } catch (e) {
       if (isCancellation(e)) {
         setStep('setup')
@@ -121,7 +130,8 @@ export function CompressPdf() {
         setStep('setup')
       }
     } finally {
-      abortRef.current = null
+      cancelRef.current = null
+      void stopKeepingWorking()
     }
   }
 
@@ -234,7 +244,7 @@ export function CompressPdf() {
             currentBytes={progress?.phase === 'compressing' ? progress.bytesSoFar : undefined}
             targetBytes={targetBytes}
             detail={progressDetail}
-            onCancel={() => abortRef.current?.abort()}
+            onCancel={() => cancelRef.current?.()}
           />
         )}
 

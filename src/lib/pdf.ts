@@ -2,6 +2,15 @@ import { PDFDocument, rgb } from 'pdf-lib'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url'
 import { canvasToBlob, decodeToCanvas, releaseCanvas } from './image'
+import {
+  createSurface,
+  encodeSurface,
+  offscreenOnly,
+  releaseSurface,
+  sizeSurface,
+  surfaceContext,
+  type Surface,
+} from './surface'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
@@ -25,8 +34,36 @@ export async function getPageCount(file: Blob): Promise<number> {
   return count
 }
 
+/**
+ * pdf.js's own scratch canvases, made where there is no document.
+ *
+ * pdf.js reaches for `document.createElement('canvas')` on its own account —
+ * scaling an image, painting a pattern — and inside a worker that is simply
+ * undefined, which failed the whole job. It takes the class, not an instance,
+ * and builds it itself.
+ */
+class OffscreenCanvasFactory {
+  create(width: number, height: number) {
+    const canvas = createSurface(width, height)
+    return { canvas, context: surfaceContext(canvas, true) }
+  }
+
+  reset(owned: { canvas: Surface }, width: number, height: number) {
+    sizeSurface(owned.canvas, width, height)
+  }
+
+  destroy(owned: { canvas: Surface | null; context: unknown }) {
+    if (owned.canvas) releaseSurface(owned.canvas)
+    owned.canvas = null
+    owned.context = null
+  }
+}
+
 async function loadPdfJsDoc(bytes: Uint8Array) {
-  const loadingTask = pdfjsLib.getDocument({ data: bytes.slice() })
+  const loadingTask = pdfjsLib.getDocument({
+    data: bytes.slice(),
+    ...(offscreenOnly ? { CanvasFactory: OffscreenCanvasFactory } : {}),
+  })
   return loadingTask.promise
 }
 
@@ -146,14 +183,20 @@ export async function openPageThumbnails(
 async function renderPageToCanvas(
   page: pdfjsLib.PDFPageProxy,
   scale: number,
-  reuse?: HTMLCanvasElement,
-): Promise<HTMLCanvasElement> {
+  reuse?: Surface,
+): Promise<Surface> {
   const viewport = page.getViewport({ scale })
-  const canvas = reuse ?? document.createElement('canvas')
-  canvas.width = Math.max(1, Math.ceil(viewport.width))
-  canvas.height = Math.max(1, Math.ceil(viewport.height))
-  const ctx = canvas.getContext('2d')!
-  await page.render({ canvasContext: ctx, viewport }).promise
+  const canvas = reuse ?? createSurface(viewport.width, viewport.height)
+  if (reuse) sizeSurface(canvas, viewport.width, viewport.height)
+  const ctx = surfaceContext(canvas)
+  // A page is white before anything is painted on it, and pdf.js will not fill
+  // that itself on an opaque context.
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  await page.render({
+    canvasContext: ctx as CanvasRenderingContext2D,
+    viewport,
+  }).promise
   return canvas
 }
 
@@ -317,6 +360,13 @@ let lastYield = 0
  * and nothing is spent on pages that were quick.
  */
 function yieldToUi(force = false): Promise<void> {
+  // In a worker there is no interface to keep painting, and this is the whole
+  // reason compression stalled when the app was not on screen: Chromium
+  // throttles a hidden page's timers to one a second, then one a minute, so a
+  // yield per page turned a three-minute job into hours. Nothing here waits on
+  // a timer any more — the awaits on rendering and encoding turn the message
+  // queue by themselves, which is what lets a cancel still arrive.
+  if (offscreenOnly) return Promise.resolve()
   const now = performance.now()
   if (!force && now - lastYield < 16) return Promise.resolve()
   lastYield = now
@@ -773,7 +823,7 @@ function cappedScale(page: pdfjsLib.PDFPageProxy, desired: number, limits: Rende
  * between. A photograph fills that middle. Sampling every fourth pixel is more
  * than enough to tell them apart.
  */
-function looksLikeText(canvas: HTMLCanvasElement): boolean {
+function looksLikeText(canvas: Surface): boolean {
   const ctx = canvas.getContext('2d')
   if (!ctx || canvas.width === 0 || canvas.height === 0) return false
   const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
@@ -817,7 +867,7 @@ async function calibrate(
   // the budget already starved would tell us nothing.
   const probe = await renderPageToCanvas(page, cappedScale(page, 1, PHOTO_LIMITS))
   const limits = looksLikeText(probe) ? TEXT_LIMITS : PHOTO_LIMITS
-  releaseCanvas(probe)
+  releaseSurface(probe)
   throwIfAborted(signal)
 
   // Start from the resolution the per-page budget can afford, but never below
@@ -833,9 +883,9 @@ async function calibrate(
   page.cleanup()
   throwIfAborted(signal)
 
-  const high = (await canvasToBlob(canvas, 'image/jpeg', 0.75)).size
-  const low = (await canvasToBlob(canvas, 'image/jpeg', 0.4)).size
-  releaseCanvas(canvas)
+  const high = (await encodeSurface(canvas, 'image/jpeg', 0.75)).size
+  const low = (await encodeSurface(canvas, 'image/jpeg', 0.4)).size
+  releaseSurface(canvas)
 
   if (high <= budgetPerPage) return { scale, quality: MAX_QUALITY, limits }
 
@@ -874,7 +924,7 @@ async function assemble(
   let bytesSoFar = 0
   const startedAt = performance.now()
   // One canvas for the whole document, resized per page.
-  const scratch = document.createElement('canvas')
+  const scratch = createSurface(1, 1)
 
   for (let i = 0; i < plan.length; i++) {
     throwIfAborted(ctx.signal)
@@ -883,7 +933,7 @@ async function assemble(
     if (entry.rasterise || !srcDoc) {
       const page = await renderDoc.getPage(entry.index)
       const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale, limits), scratch)
-      const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
+      const jpeg = await encodeSurface(canvas, 'image/jpeg', settings.quality)
 
       const jpegBytes = new Uint8Array(await jpeg.arrayBuffer())
       bytesSoFar += jpegBytes.byteLength
@@ -917,7 +967,7 @@ async function assemble(
     await yieldToUi()
   }
 
-  releaseCanvas(scratch)
+  releaseSurface(scratch)
   return out.save({ useObjectStreams: true })
 }
 
@@ -946,12 +996,12 @@ async function project(
 
   let totalBytes = 0
   const startedAt = performance.now()
-  const scratch = document.createElement('canvas')
+  const scratch = createSurface(1, 1)
   for (const [i, entry] of samples.entries()) {
     throwIfAborted(ctx.signal)
     const page = await doc.getPage(entry.index)
     const canvas = await renderPageToCanvas(page, cappedScale(page, settings.scale, limits), scratch)
-    const jpeg = await canvasToBlob(canvas, 'image/jpeg', settings.quality)
+    const jpeg = await encodeSurface(canvas, 'image/jpeg', settings.quality)
     page.cleanup()
     totalBytes += jpeg.size
     ctx.onProgress?.({
@@ -964,7 +1014,7 @@ async function project(
     await yieldToUi()
   }
   const elapsed = performance.now() - startedAt
-  releaseCanvas(scratch)
+  releaseSurface(scratch)
 
   const perPage = totalBytes / Math.max(1, samples.length)
   // Copied pages keep their original weight, which we cannot see from here, so

@@ -714,6 +714,60 @@ async function main() {
   const tightSizes = [...tightText.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))
   check('Tight target lands under the limit', tightSizes.length >= 2 && tightSizes[1] <= 400, JSON.stringify(tightSizes))
 
+  // ---- Compression keeps working when the page's timers are throttled ----
+  // Reported from the device: leaving the app all but stopped compression, and
+  // the user had to keep reopening it. The cause was a setTimeout yield once a
+  // page: Chromium throttles a hidden page's timers to one a second, then one a
+  // minute. Headless Chromium will not let a page actually go hidden, so this
+  // emulates the mechanism instead — every page timer is held to a second, as a
+  // backgrounded page's would be. Work that has left the main thread is
+  // untouched by that; work that has not, crawls.
+  await page.addInitScript(() => {
+    const real = window.setTimeout.bind(window)
+    window.__throttle = false
+    window.setTimeout = (fn, delay, ...args) =>
+      real(fn, window.__throttle ? Math.max(1000, delay || 0) : delay, ...args)
+  })
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-huge.pdf`])
+  await page.waitForSelector('text=Maximum size', { timeout: 15000 })
+  // A 10 MB file defaults the unit to MB.
+  await page.getByRole('button', { name: 'MB', exact: true }).click()
+  const throttleField = page.locator('input[inputmode="decimal"]').first()
+  await throttleField.click()
+  await page.keyboard.press('Control+a')
+  await page.keyboard.press('Backspace')
+  await page.keyboard.type('2')
+  await page.locator('body').click()
+  await page.waitForTimeout(200)
+  const workerUrls = []
+  page.on('worker', (w) => workerUrls.push(w.url()))
+  await page.evaluate(() => {
+    window.__throttle = true
+  })
+  const throttledStart = Date.now()
+  await page.locator('button:has-text("Compress PDF")').click()
+  await page.waitForSelector('button:has-text("Save to device")', { timeout: 240000 })
+  const throttledMs = Date.now() - throttledStart
+  await page.evaluate(() => {
+    window.__throttle = false
+  })
+  console.log(`      10 MB / 41 pages with page timers throttled took ${(throttledMs / 1000).toFixed(1)}s`)
+  // Left on the main thread this same job pays a throttled timer per page: 41
+  // pages, so 40s of waiting on top of the work.
+  check(
+    `Throttled timers do not stall compression (${(throttledMs / 1000).toFixed(1)}s)`,
+    throttledMs < 30000,
+    `${(throttledMs / 1000).toFixed(1)}s`,
+  )
+  check(
+    'The work runs off the main thread',
+    workerUrls.some((u) => u.includes('compress.worker')),
+    workerUrls.map((u) => u.split('/').pop()).join(', ') || 'no workers',
+  )
+  check('And it still produced a real file', (await page.locator('main').innerText()).includes('Meets every requirement'))
+
   // ---- Scanned book: the words have to stay readable ----
   // Every page is a photograph of text. Asked for a size it cannot reach, the
   // compressor used to drop to 32 DPI and hand back dissolved letters. It must
