@@ -871,6 +871,19 @@ async function main() {
     `${longBudget.percent}% of a 27 MB limit`,
   )
 
+  // A document with a rhythm, which is what every other fixture here lacks.
+  // The sampler used to walk a fixed stride from page one, so on a practice
+  // book — a plate, then its report, then the next plate — it measured twelve
+  // plates and not one report, and cut the settings to fit a total that was
+  // never real. Reported as a 30 MB limit coming back at 22 MB and a 15 MB
+  // limit at 11: the same 73% both times, on two different books.
+  const caseBudget = await budgetUsed('test-doc-casebook.pdf', 24, 'MB')
+  check(
+    'A book that alternates heavy and light pages is measured honestly',
+    caseBudget.percent >= 88,
+    `${caseBudget.percent}% of a 24 MB limit (67% when every sampled page was a plate)`,
+  )
+
   const heavyBudget = await budgetUsed('test-doc-heavy.pdf', 700, 'KB')
   check(
     'A document with room to spare is not left at half the limit',

@@ -508,6 +508,77 @@ async function bookScanPdf(name, pages, { width = 1400, height = 1980, quality =
   )
 }
 
+/**
+ * A practice book: a plate, then its report, then the next plate.
+ *
+ * Every other fixture here has pages that all weigh about the same, which is
+ * the one shape that cannot expose a biased sampler. A real case book
+ * alternates — an X-ray, then a page of solid text — and the reported 224-page
+ * radiology book is exactly that. Its two-page rhythm against a sampler walking
+ * in even strides is what made a 30 MB limit come back at 22 MB and a 15 MB
+ * limit at 11: the same 73% both times.
+ */
+async function alternatingPdf(name, pages) {
+  const doc = await PDFDocument.create()
+  for (let i = 0; i < pages; i++) {
+    const plate = i % 2 === 0
+    const dataUrl = await page.evaluate(
+      ({ n, plate }) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1400
+        canvas.height = 1980
+        const ctx = canvas.getContext('2d')
+        if (plate) {
+          // A radiograph: dark, smooth gradients, fine grain. Expensive to encode.
+          const grad = ctx.createRadialGradient(700, 990, 80, 700, 990, 1100)
+          grad.addColorStop(0, '#d8d8d8')
+          grad.addColorStop(0.55, '#6a6a6a')
+          grad.addColorStop(1, '#0a0a0a')
+          ctx.fillStyle = grad
+          ctx.fillRect(0, 0, canvas.width, canvas.height)
+          const image = ctx.getImageData(0, 0, canvas.width, canvas.height)
+          const data = image.data
+          let state = (n + 1) * 2654435761
+          for (let p = 0; p < data.length; p += 4) {
+            state = (state * 1103515245 + 12345) & 0x7fffffff
+            const noise = ((state >> 8) & 0x3f) - 32
+            data[p] = Math.max(0, Math.min(255, data[p] + noise))
+            data[p + 1] = Math.max(0, Math.min(255, data[p + 1] + noise))
+            data[p + 2] = Math.max(0, Math.min(255, data[p + 2] + noise))
+          }
+          ctx.putImageData(image, 0, 0)
+        } else {
+          // The report facing it: mostly white paper, cheap to encode.
+          ctx.fillStyle = '#fcfcfa'
+          ctx.fillRect(0, 0, canvas.width, canvas.height)
+          ctx.fillStyle = '#c2185b'
+          ctx.font = 'bold 30px Helvetica, Arial, sans-serif'
+          ctx.fillText('SUMMARY, INVESTIGATIONS & MANAGEMENT', 110, 140)
+          ctx.fillStyle = '#1a1a1a'
+          ctx.font = '25px Georgia, serif'
+          const line = 'This radiograph demonstrates a large right-sided effusion with an'
+          for (let l = 0; l < 40; l++) ctx.fillText(line, 110, 220 + l * 38)
+        }
+        return canvas.toDataURL('image/jpeg', plate ? 0.45 : 0.4)
+      },
+      { n: i, plate },
+    )
+    const image = await doc.embedJpg(Buffer.from(dataUrl.split(',')[1], 'base64'))
+    const pg = doc.addPage([595, 842])
+    pg.drawImage(image, { x: 0, y: 0, width: 595, height: 842 })
+  }
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log(
+    'wrote',
+    name,
+    (bytes.byteLength / 1024 / 1024).toFixed(1),
+    'MB',
+    `(${pages} pages, alternating plate and report)`,
+  )
+}
+
+await alternatingPdf('test-doc-casebook.pdf', 120)
 await bookScanPdf('test-doc-book.pdf', 24)
 // The reported file's actual shape, and the only one that takes its path: past
 // 60 pages the compressor stops inspecting pages, and past 24 MB it stops

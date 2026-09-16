@@ -1262,9 +1262,26 @@ async function project(
   },
 ): Promise<{ bytes: number; msPerPage: number }> {
   const rasterPages = plan.filter((p) => p.rasterise)
-  const wanted = sampleCount(rasterPages.length)
-  const step = Math.max(1, Math.floor(rasterPages.length / wanted))
-  const samples = rasterPages.filter((_, i) => i % step === 0).slice(0, wanted)
+  const pages = rasterPages.length
+  const wanted = Math.min(sampleCount(pages), pages)
+  // Split the document into equal blocks and take one page from each, rotating
+  // which page that is as it goes.
+  //
+  // This used to walk a fixed stride from page one, and a fixed stride falls
+  // into step with any document that has a rhythm of its own. A practice book
+  // alternates — a plate, then its report — and 224 pages sampled twelve at a
+  // time gives a stride of eighteen, so every page measured was a plate and not
+  // one report was ever weighed. The projection then believed the whole book
+  // weighed what a plate weighs, and the settings were cut to fit a total that
+  // was never real: a 30 MB limit came back at 22 MB, a 15 MB limit at 11, the
+  // same 73% both times. Rotating the pick inside each block keeps the even
+  // coverage and breaks the alignment.
+  const samples: PagePlan[] = []
+  for (let i = 0; i < wanted; i++) {
+    const start = Math.floor((i * pages) / wanted)
+    const end = Math.max(start + 1, Math.floor(((i + 1) * pages) / wanted))
+    samples.push(rasterPages[Math.min(pages - 1, start + (i % (end - start)))])
+  }
 
   let totalBytes = 0
   const startedAt = performance.now()
