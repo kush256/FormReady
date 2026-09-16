@@ -11,7 +11,7 @@ import { Notice } from '../components/Notice'
 import { EmptyState } from '../components/EmptyState'
 import { CompressIllustration } from '../components/Illustrations'
 import { pickPdfs } from '../lib/picker'
-import { isCancellation, type CompressProgress, type CompressPdfResult } from '../lib/pdf'
+import { getPageCount, isCancellation, type CompressProgress, type CompressPdfResult } from '../lib/pdf'
 import { runCompression } from '../lib/compressClient'
 import { askToNotify, keepWorking, notifyDone, stopKeepingWorking } from '../lib/background'
 import { formatBytes } from '../lib/format'
@@ -28,6 +28,22 @@ const PHASE_LABEL: Record<CompressProgress['phase'], string> = {
 
 const MIN_TARGET_BYTES = 5 * 1024
 
+/**
+ * What a page of scanned text costs, and therefore when to say so.
+ *
+ * Measured on an A4 scan: 111 KB at the compressor's 120 DPI floor and lowest
+ * usable quality, 203 KB at 120 DPI and full quality, 297 KB at 150 DPI.
+ * Against that, a reported 224-page book squeezed to 98 KB a page came back
+ * readable but visibly soft — which is the line these sit either side of.
+ *
+ * They describe scans, which is most of what this app is pointed at. A PDF of
+ * photographs survives far less room, so the wording says so rather than
+ * pretending one number fits both.
+ */
+const SOFT_PAGE_BYTES = 100 * 1024
+const HARSH_PAGE_BYTES = 45 * 1024
+const COMFORTABLE_PAGE_BYTES = 150 * 1024
+
 function formatEta(seconds: number): string {
   if (seconds < 5) return 'almost done'
   if (seconds < 60) return `about ${seconds}s left`
@@ -43,6 +59,10 @@ export function CompressPdf() {
   const askedBytes = opened?.targetBytes
   const [step, setStep] = useState<Step>('pick')
   const [file, setFile] = useState<File | null>(null)
+  // Read as soon as a file is picked, because a limit only means anything
+  // spread across the pages it has to cover: 5 MB is generous for four pages
+  // and starvation for four hundred.
+  const [pageCount, setPageCount] = useState<number | null>(null)
   const [targetBytes, setTargetBytes] = useState(500 * 1024)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<CompressProgress | null>(null)
@@ -72,12 +92,35 @@ export function CompressPdf() {
     return null
   }, [file, targetBytes])
 
+  // Not an error, so it never blocks the button: a squeezed document is still
+  // often exactly what the user wants. It just should not be a surprise.
+  const warning = useMemo(() => {
+    if (!file || issue || !pageCount) return null
+    const perPage = targetBytes / pageCount
+    if (perPage >= SOFT_PAGE_BYTES) return null
+    const roomy = Math.min(file.size, Math.round(COMFORTABLE_PAGE_BYTES * pageCount))
+    return {
+      perPage: Math.round(perPage),
+      severe: perPage < HARSH_PAGE_BYTES,
+      roomy: roomy > targetBytes ? roomy : null,
+    }
+  }, [file, issue, pageCount, targetBytes])
+
+  // Held in a const so the button's handler can close over a plain number.
+  const roomyTarget = warning?.roomy ?? null
+
   async function pick() {
     const files = await pickPdfs(false)
     if (!files.length) return
     setError(null)
     const picked = files[0]
     setFile(picked)
+    // Not awaited: the size field should be usable straight away, and the
+    // warning that needs this can appear a moment later.
+    setPageCount(null)
+    void getPageCount(picked)
+      .then(setPageCount)
+      .catch(() => setPageCount(null))
     // The limit the form states, when we were told one and the file is over
     // it. Otherwise half the original: a sane starting point that is never
     // immediately invalid.
@@ -131,6 +174,7 @@ export function CompressPdf() {
 
   function reset() {
     setFile(null)
+    setPageCount(null)
     setResult(null)
     setResultBlob(null)
     setError(null)
@@ -217,6 +261,22 @@ export function CompressPdf() {
                 }))}
               >
                 {issue.detail}
+              </Notice>
+            )}
+
+            {warning && (
+              <Notice
+                title={warning.severe ? 'Text will be hard to read' : 'Text will lose some sharpness'}
+                actions={
+                  roomyTarget === null
+                    ? []
+                    : [{ label: `Use ${formatBytes(roomyTarget)}`, onClick: () => setTargetBytes(roomyTarget) }]
+                }
+              >
+                {formatBytes(warning.perPage)} a page across {pageCount} pages.{' '}
+                {warning.severe
+                  ? 'Scanned pages need more room than this to stay legible. Compress anyway if the limit is fixed.'
+                  : 'Fine for photos, but letters on a scan will soften a little.'}
               </Notice>
             )}
 

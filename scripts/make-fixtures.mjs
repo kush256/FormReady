@@ -453,6 +453,61 @@ async function filterPdf(name, pages, { trPage, smaskPage = -1, exponent = 2 }) 
   )
 }
 
+/**
+ * A book scan, in the shape that came back softer than it needed to be.
+ *
+ * The reported case was a 224-page radiology text: ordinary scanned pages,
+ * generously encoded, with a limit that left real room to work in. What makes
+ * it useful here is that room — its pages sit well above the compressor's
+ * legibility floor, so a limit set above that floor is one the compressor can
+ * either spend or leave sitting unused.
+ */
+async function bookScanPdf(name, pages) {
+  const doc = await PDFDocument.create()
+  for (let i = 0; i < pages; i++) {
+    const dataUrl = await page.evaluate(
+      ({ n }) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = 1400
+        canvas.height = 1980
+        const ctx = canvas.getContext('2d')
+        ctx.fillStyle = '#fbfaf7'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        // Light grain only. Heavy speckle encodes like noise and pins the page
+        // against the floor, which is the opposite of the case being modelled.
+        for (let g = 0; g < 4000; g++) {
+          ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.04})`
+          ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, 2, 2)
+        }
+        ctx.fillStyle = '#141414'
+        ctx.font = 'bold 34px Georgia, serif'
+        ctx.fillText(`Chapter note ${n}`, 110, 150)
+        ctx.font = '25px Georgia, serif'
+        const line =
+          'This radiograph demonstrates a large right-sided effusion with an air-fluid'
+        for (let l = 0; l < 44; l++) {
+          ctx.fillText(line, 110, 230 + l * 38)
+        }
+        return canvas.toDataURL('image/jpeg', 0.9)
+      },
+      { n: i + 1 },
+    )
+    const image = await doc.embedJpg(Buffer.from(dataUrl.split(',')[1], 'base64'))
+    const pg = doc.addPage([595, 842])
+    pg.drawImage(image, { x: 0, y: 0, width: 595, height: 842 })
+  }
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log(
+    'wrote',
+    name,
+    (bytes.byteLength / 1024).toFixed(0),
+    'KB',
+    `(${pages} book-scan pages, ${(bytes.byteLength / 1024 / pages).toFixed(0)} KB each)`,
+  )
+}
+
+await bookScanPdf('test-doc-book.pdf', 24)
 await filterPdf('test-doc-filters.pdf', 6, { trPage: 3, smaskPage: 4 })
 await filterPdf('test-doc-identity-tr.pdf', 4, { trPage: 2, exponent: 1 })
 await scannedPdf('test-doc-scan.pdf', 10)

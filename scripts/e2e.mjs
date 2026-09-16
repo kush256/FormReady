@@ -760,6 +760,83 @@ async function main() {
     workerLog.join(' | ') || 'no workers',
   )
 
+  // ---- The limit is an allowance to spend, not just a ceiling to stay under ----
+  // Calibration only ever gave ground: it guessed settings and corrected them
+  // downwards when they came out too big, never upwards when they came out
+  // small. A 42 MB book asked for 30 MB came back at 22 MB, soft, with a third
+  // of the allowance unused.
+  async function compressTo(file, target, unit) {
+    await openTool(page, 'compress-pdf')
+    await page.waitForSelector('text=Reduce PDF size')
+    await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/${file}`])
+    await page.waitForSelector('text=Maximum size', { timeout: 20000 })
+    // The unit first: it decides whether the field takes decimals, so filling
+    // before switching fills the wrong scale.
+    await page.locator(`button:has-text("${unit}")`).first().click()
+    await page.locator(`input[aria-label="Maximum size in ${unit}"]`).fill(String(target))
+    return page
+  }
+
+  async function budgetUsed(file, target, unit) {
+    await compressTo(file, target, unit)
+    await page.locator('button:has-text("Compress PDF")').click()
+    await page.waitForSelector('text=BEFORE', { timeout: 240000 }).catch(() => {})
+    const text = await page.locator('main').innerText()
+    const after = /AFTER\s+([\d.]+)\s*(KB|MB)/i.exec(text)
+    if (!after) return { percent: 0, text }
+    const kb = after[2].toUpperCase() === 'MB' ? parseFloat(after[1]) * 1024 : parseFloat(after[1])
+    const targetKb = unit === 'MB' ? target * 1024 : target
+    return { percent: Math.round((kb / targetKb) * 100), text }
+  }
+
+  const bookBudget = await budgetUsed('test-doc-book.pdf', 8, 'MB')
+  check(
+    'A scan uses the allowance it was given rather than stopping short',
+    bookBudget.percent >= 78,
+    `${bookBudget.percent}% of an 8 MB limit (74% before)`,
+  )
+
+  const heavyBudget = await budgetUsed('test-doc-heavy.pdf', 700, 'KB')
+  check(
+    'A document with room to spare is not left at half the limit',
+    heavyBudget.percent >= 45,
+    `${heavyBudget.percent}% of a 700 KB limit (35% before)`,
+  )
+
+  // ---- A squeezed target says so before the work, not after ----
+  await compressTo('test-doc-book.pdf', 500, 'KB')
+  // The page count is read from the file in the background, and the warning
+  // cannot be worked out without it.
+  await page.waitForSelector('text=hard to read', { timeout: 20000 }).catch(() => {})
+  const harsh = await page.locator('main').innerText()
+  check(
+    'A punishing target warns about legibility before compressing',
+    /hard to read/i.test(harsh),
+    harsh.split('\n').find((l) => /read|sharp/i.test(l)) ?? harsh.slice(0, 80),
+  )
+  check(
+    'That warning advises, it does not block',
+    !(await page.locator('button:has-text("Compress PDF")').isDisabled()),
+  )
+
+  await compressTo('test-doc-book.pdf', 2000, 'KB')
+  await page.waitForTimeout(300)
+  const soft = await page.locator('main').innerText()
+  check(
+    'A merely tight target warns more gently',
+    /lose some sharpness/i.test(soft) && !/hard to read/i.test(soft),
+    soft.split('\n').find((l) => /sharp/i.test(l)) ?? soft.slice(0, 80),
+  )
+
+  await compressTo('test-doc-book.pdf', 8, 'MB')
+  await page.waitForTimeout(300)
+  const comfortable = await page.locator('main').innerText()
+  check(
+    'A comfortable target says nothing at all',
+    !/hard to read/i.test(comfortable) && !/lose some sharpness/i.test(comfortable),
+    comfortable.split('\n').slice(0, 2).join(' '),
+  )
+
   // ---- Tight target: the reported "restarted at zero" case ----
   // A limit the first pass cannot reach on its own used to trigger a second
   // render of every page, which reset the page counter to 1 and, on a phone,

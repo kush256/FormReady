@@ -565,12 +565,21 @@ const PHOTO_LIMITS: RenderLimits = {
   text: false,
 }
 
-/** 120 DPI at the floor, 150 at the ceiling: the readable band for scanned text. */
+/**
+ * 120 DPI at the floor, 175 at the ceiling: the readable band for scanned text.
+ *
+ * The ceiling used to sit at 150, below the resolution most scanners produce,
+ * so a document whose limit could comfortably pay for more was held down to
+ * less and came back softer than it needed to be. It stops at 175 rather than
+ * going higher because the page canvas is the memory this app has run a phone
+ * out of before, and past a typical scan's own resolution the extra pixels are
+ * interpolation rather than detail.
+ */
 const TEXT_LIMITS: RenderLimits = {
   minScale: 120 / 72,
-  maxScale: 150 / 72,
+  maxScale: 175 / 72,
   minQuality: 0.4,
-  maxPixels: 2_300_000,
+  maxPixels: 3_000_000,
   text: true,
 }
 
@@ -618,6 +627,24 @@ const PROJECTION_ROUNDS = 2
  * worth doubling the wait for.
  */
 const REFINE_THRESHOLD = 1.02
+
+/**
+ * How far under the limit the samples have to land before it is worth spending
+ * the difference on quality, and how much of the limit to then aim for.
+ *
+ * Calibration only ever gives ground: it picks settings it believes will fit
+ * and corrects downward when they do not, so a document that comes in well
+ * under its limit stays there. That is how a 42 MB scan asked to fit 30 MB
+ * came back at 22 MB — a third of the allowance unspent, and text visibly
+ * softer than it needed to be.
+ *
+ * Growth aims deliberately short of the ceiling rather than at it, because the
+ * two directions are not symmetrical in what they cost the user: these are
+ * upload limits, so a file over the line is rejected outright, where one a
+ * little under it is simply accepted.
+ */
+const GROWTH_THRESHOLD = 0.9
+const GROWTH_AIM = 0.95
 
 /** Progress is divided up front so the bar never jumps backwards. */
 const PLAN_BASE = 0.06
@@ -775,10 +802,22 @@ export async function compressPdf(
   // bytes per pixel; the samples are measurement. Skipping this step is what
   // made the first pass overshoot and the whole document get rendered twice.
   const projectionTarget = maxBytes * STRUCTURE_HEADROOM
-  for (let round = 1; round <= PROJECTION_ROUNDS && projection.bytes > projectionTarget; round++) {
-    const overshoot = projection.bytes / projectionTarget
-    const next = shrink(settings, overshoot, limits)
-    // Both levers are already at their floor: no round will help.
+  // The heaviest settings measured that still fit. Kept because the rounds can
+  // move in both directions now, and a correction that overshoots must not
+  // leave the document worse off than the guess it started from — growing and
+  // then over-correcting downwards once cost a document a seventh of its size
+  // for nothing.
+  let bestFit = projection.bytes <= projectionTarget ? { settings, bytes: projection.bytes } : null
+  for (let round = 1; round <= PROJECTION_ROUNDS; round++) {
+    const ratio = projection.bytes / projectionTarget
+    // Correcting in one direction only is what left a third of the allowance
+    // unspent: over the limit the settings gave ground, under it they simply
+    // stayed where calibration had guessed.
+    let next: typeof settings
+    if (ratio > 1) next = shrink(settings, ratio, limits)
+    else if (ratio < GROWTH_THRESHOLD) next = grow(settings, GROWTH_AIM / ratio, limits)
+    else break
+    // Both levers are already against a stop: no round will help.
     if (next.scale === settings.scale && next.quality === settings.quality) break
     settings = next
     projection = await project(renderDoc, plan, settings, limits, {
@@ -790,7 +829,12 @@ export async function compressPdf(
       span: sampleSpan,
     })
     throwIfAborted(signal)
+    if (projection.bytes <= projectionTarget && (!bestFit || projection.bytes > bestFit.bytes)) {
+      bestFit = { settings, bytes: projection.bytes }
+    }
   }
+  // Nothing fitting was ever measured, so the last and smallest settings stand.
+  if (bestFit) settings = bestFit.settings
 
   if (projection.bytes >= fallback.byteLength) {
     return {
@@ -920,6 +964,32 @@ function shrink(
   return {
     scale,
     quality: clamp(settings.quality / factor, limits.minQuality, MAX_QUALITY),
+  }
+}
+
+/**
+ * Spends headroom on both levers: the mirror of `shrink`.
+ *
+ * Resolution moves here even on text, where `shrink` deliberately holds it
+ * still. The two cases are different: that floor exists to stop the compressor
+ * dissolving letters on the way down, not to pin a page at 120 DPI when the
+ * limit would comfortably pay for the 175 at the top of the same readable band.
+ */
+function grow(
+  settings: { scale: number; quality: number },
+  headroom: number,
+  limits: RenderLimits,
+): { scale: number; quality: number } {
+  const quality = clamp(settings.quality * Math.sqrt(headroom), limits.minQuality, MAX_QUALITY)
+  // Whatever quality could not absorb goes into resolution instead. Splitting
+  // the correction evenly regardless is what made this crawl: on a document
+  // with room to spare quality is usually already against its ceiling, so half
+  // of every round was being thrown away and the budget never got spent.
+  const taken = quality / settings.quality
+  const left = Math.max(1, headroom / taken)
+  return {
+    scale: clamp(settings.scale * Math.sqrt(left), limits.minScale, limits.maxScale),
+    quality,
   }
 }
 
