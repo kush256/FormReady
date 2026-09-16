@@ -393,6 +393,17 @@ export interface CompressPdfResult {
   stoppedForLegibility?: boolean
   /** The work was measured to cost far more time than the saving was worth. */
   notWorthTheTime?: { minutes: number; savingPercent: number }
+  /**
+   * The resolution and quality the pages were actually rendered at.
+   *
+   * Carried out because for four rounds nothing the app produced could tell a
+   * document that rendered at 120 DPI and quality 0.44 from one that rendered
+   * at 175 and 0.82, or either from one that never rasterised at all — so a
+   * shortfall on a phone could only be guessed at. Absent on the paths where
+   * no page was rendered.
+   */
+  dpi?: number
+  quality?: number
 }
 
 export interface CompressProgress {
@@ -896,6 +907,9 @@ export async function compressPdf(
   }
 
   try {
+    // What the finished pages were actually rendered with, which the refine
+    // pass below can change.
+    let used = settings
     let best = await assemble(renderDoc, srcDoc, plan, settings, limits, {
       onProgress,
       signal,
@@ -925,7 +939,12 @@ export async function compressPdf(
             span: REFINE_SPAN,
             priorMsPerPage: projection.msPerPage,
           })
-          if (retry.byteLength < best.byteLength) best = retry
+          if (retry.byteLength < best.byteLength) {
+            best = retry
+            // The pages that survived were rendered with these, not the first
+            // pass's, so these are what the result should report.
+            used = corrected
+          }
         } catch (e) {
           if (isCancellation(e) || e instanceof PdfNeedsDomError) throw e
           // Keep the first pass rather than failing the whole job.
@@ -956,6 +975,9 @@ export async function compressPdf(
       rasterisedPages: rasterCount,
       copiedPages: pageCount - rasterCount,
       stoppedForLegibility: limits.text && best.byteLength > maxBytes,
+      // pdf.js scale 1 is 72 DPI, so this is the resolution in plain terms.
+      dpi: Math.round(used.scale * 72),
+      quality: Math.round(used.quality * 100) / 100,
     }
   } catch (e) {
     throw classifyFailure(e, lastPage ? `Failed on page ${lastPage} of ${pageCount}` : 'Could not compress this PDF')

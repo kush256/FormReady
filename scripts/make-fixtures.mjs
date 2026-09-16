@@ -94,6 +94,12 @@ await draw('test-photo-plain.jpg', 1500, 1500, PLAIN_PORTRAIT, {})
 // Already small. Proves the app never enlarges: given a generous limit there is
 // nothing to spend it on, and inventing pixels is not an improvement.
 await draw('test-photo-small.jpg', 240, 320, PHOTO, { a: '#7a5c9e', b: '#d6a2ad' })
+
+// What a phone camera actually hands over, and the only fixture past the 2400px
+// cap in image.ts — so the only one that takes the slow path through
+// loadCappedImage: decode, redraw, re-encode. That path ran with nothing on
+// screen, which is the several seconds the app spent looking hung.
+await draw('test-photo-huge.jpg', 4032, 3024, PHOTO, { a: '#2d6cdf', b: '#e8c547' })
 await draw('blue-signature.jpg', 900, 400, SIGNATURE, { ink: '#1B3F9B' })
 await draw('black-signature.jpg', 900, 400, SIGNATURE, { ink: '#141414' })
 

@@ -56,6 +56,7 @@ const PRESETS: Preset[] = [
 type Step =
   | 'requirement'
   | 'source'
+  | 'opening'
   | 'crop'
   | 'working'
   | 'result'
@@ -166,9 +167,15 @@ export function SmartPhoto() {
   async function handlePicked(files: File[]) {
     const file = files[0]
     if (!file) return
+    // Shown before the await, not after it: opening a phone photo decodes,
+    // redraws and re-encodes several megapixels, which is seconds of a screen
+    // that otherwise sits there looking like the app has hung.
+    const cameFrom = step
+    setStep('opening')
     try {
       setError(null)
       setSourceBytes(file.size)
+      await nextFrame()
       const image = await loadCappedImage(file)
       setImg((previous) => {
         releaseImage(previous)
@@ -177,6 +184,8 @@ export function SmartPhoto() {
       setStep('crop')
     } catch {
       setError('Could not open that photo. Try a different file.')
+      // Back where they were, or the error is stranded behind a spinner.
+      setStep(cameFrom)
     }
   }
 
@@ -732,6 +741,8 @@ export function SmartPhoto() {
             </Button>
           </>
         )}
+
+        {step === 'opening' && <ProgressPanel label="Opening your photo" detail="Reading the file" />}
 
         {step === 'working' && (
           <ProgressPanel label="Preparing your photo" fraction={stage.fraction} detail={stage.label} />

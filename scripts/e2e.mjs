@@ -381,6 +381,21 @@ async function main() {
   await page.waitForSelector('text=Your signature is ready', { timeout: 20000 })
   check('Black ink not falsely flagged', (await page.locator('text=This looks like blue ink').count()) === 0)
 
+  // ---- Picking a photo says something while it opens ----
+  // Opening a phone photo decodes, redraws and re-encodes several megapixels.
+  // That ran with nothing at all on screen, so for three or four seconds the
+  // app looked like it had hung at the moment the user had just acted.
+  await openTool(page, 'signature-maker')
+  await page.waitForSelector('text=Add your signature')
+  check('The signature screen offers the bold-pen tip before signing', /bold pen/i.test(await page.locator('main').innerText()))
+  const opening = page.waitForSelector('text=Opening your signature', { timeout: 10000 }).then(
+    () => true,
+    () => false,
+  )
+  await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/test-photo-huge.jpg`])
+  check('Choosing a photo says it is opening rather than looking hung', await opening)
+  await page.waitForSelector('text=Frame your signature', { timeout: 20000 })
+
   // ---- Signature: a form's smallest size is a requirement, not a suggestion ----
   // SSC asks for 10-20 KB at 140×60. Ink on white paper encodes to a few
   // kilobytes at those dimensions, and quality is already at its ceiling, so
@@ -882,6 +897,23 @@ async function main() {
     'A book that alternates heavy and light pages is measured honestly',
     caseBudget.percent >= 88,
     `${caseBudget.percent}% of a 24 MB limit (67% when every sampled page was a plate)`,
+  )
+
+  // What the compressor chose, on the screen. For four rounds nothing the app
+  // produced could tell a document rendered at 120 DPI and quality 0.44 from
+  // one rendered at 175 and 0.82, so a shortfall on someone's phone could only
+  // be guessed at.
+  const detail = await page.locator('main').innerText()
+  const dpiSaid = /(\d+)\s*DPI/.exec(detail)
+  check(
+    'The result says what resolution it rendered at',
+    dpiSaid !== null && Number(dpiSaid[1]) >= 32 && Number(dpiSaid[1]) <= 175,
+    dpiSaid ? `${dpiSaid[1]} DPI, inside the 32-175 the two limit sets allow` : 'no DPI reported',
+  )
+  check(
+    'And the quality it encoded at',
+    /quality 0\.\d+/.test(detail),
+    detail.split('\n').find((l) => /DPI/.test(l)) ?? 'no quality reported',
   )
 
   const heavyBudget = await budgetUsed('test-doc-heavy.pdf', 700, 'KB')

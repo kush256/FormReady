@@ -29,7 +29,7 @@ import { formatBytes, kbToBytes } from '../lib/format'
 import { SPECS_CHECKED } from '../lib/exams'
 import { describeRequirement, type ImageRequirement } from '../lib/requirements'
 
-type Step = 'setup' | 'draw' | 'crop' | 'working' | 'result'
+type Step = 'setup' | 'opening' | 'draw' | 'crop' | 'working' | 'result'
 
 /** What the working screen is doing right now, so it isn't a blank spinner. */
 const STAGES = ['Cropping to size', 'Cleaning the paper', 'Checking the ink', 'Fitting the file size'] as const
@@ -90,9 +90,15 @@ export function SignatureMaker() {
   async function handlePicked(files: File[]) {
     const file = files[0]
     if (!file) return
+    // Shown before the await, not after it: opening a phone photo decodes,
+    // redraws and re-encodes several megapixels, which is seconds of a screen
+    // that otherwise sits there looking like the app has hung.
+    const cameFrom = step
+    setStep('opening')
     try {
       setError(null)
       setSourceBytes(file.size)
+      await nextFrame()
       const image = await loadCappedImage(file)
       setImg((previous) => {
         releaseImage(previous)
@@ -101,6 +107,8 @@ export function SignatureMaker() {
       setStep('crop')
     } catch {
       setError('Could not open that image. Try a different file.')
+      // Back where they were, or the error is stranded behind a spinner.
+      setStep(cameFrom)
     }
   }
 
@@ -274,6 +282,17 @@ export function SignatureMaker() {
             </div>
 
             <SourceButtons onCamera={onCamera} onGallery={onGallery} />
+
+            {/*
+              Worth saying before they sign rather than after: at 140×60 there
+              are only 8,400 pixels for the whole signature, and a fine
+              ballpoint line loses most of itself to that. Nothing in the app
+              can add detail back, but a thicker pen puts it there to begin with.
+            */}
+            <p className="text-xs leading-relaxed text-[var(--ink-2)]">
+              Sign with a bold pen if you can. {width}×{height} px is a small space, and a thin ballpoint line
+              loses its shape at that size where a thicker stroke stays clear.
+            </p>
           </>
         )}
 
@@ -321,6 +340,8 @@ export function SignatureMaker() {
             </Button>
           </>
         )}
+
+        {step === 'opening' && <ProgressPanel label="Opening your signature" detail="Reading the photo" />}
 
         {step === 'working' && (
           <ProgressPanel

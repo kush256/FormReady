@@ -341,6 +341,21 @@ export function CompressPdf() {
             startOverLabel="Another PDF"
           />
         )}
+
+        {/*
+          What the compressor actually chose. Four rounds of this went by with
+          nothing on screen able to tell a document rendered at 120 DPI and
+          quality 0.44 from one rendered at 175 and 0.82, so a result that came
+          up short on someone's phone could only be guessed at.
+        */}
+        {step === 'result' && result && (
+          <p className="text-center font-mono text-[10px] leading-relaxed text-[var(--ink-3)]">
+            {result.method === 'rasterised' && result.dpi
+              ? `${result.rasterisedPages} pages re-encoded at ${result.dpi} DPI, quality ${result.quality} · `
+              : `${result.method} · `}
+            {Math.round((result.finalBytes / targetBytes) * 100)}% of the {formatBytes(targetBytes)} limit
+          </p>
+        )}
       </main>
 
       <PrivacyFooter className="safe-bottom" />
