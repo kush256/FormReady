@@ -72,6 +72,9 @@ export function Home() {
         </section>
 
         <PrivacyCard />
+
+        {/* So "which version is this?" is answerable from the phone itself. */}
+        <p className="text-center font-mono text-[10px] text-[var(--ink-3)]">Build {__BUILD__}</p>
       </main>
 
       <PrivacyFooter className="safe-bottom" />

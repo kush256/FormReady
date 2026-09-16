@@ -1309,6 +1309,13 @@ async function main() {
   const homeText = await page.locator('main').innerText()
   check('Home states files never leave the phone', homeText.includes('never leave this phone'))
   check('Home explains offline and no upload', homeText.includes('offline') && homeText.includes('Nothing is uploaded'))
+  // Without this there is no way to tell, from the phone, a fix that did not
+  // work from a fix that was never installed.
+  check(
+    'Home names the build it was made from',
+    /Build [0-9a-f]{7,}|Build local/.test(homeText),
+    homeText.split('\n').find((l) => l.startsWith('Build')) ?? 'no build line',
+  )
 
   // ---- Empty states are illustrated, not blank ----
   for (const [hash, marker] of [
