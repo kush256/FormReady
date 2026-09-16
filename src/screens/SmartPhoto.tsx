@@ -141,6 +141,7 @@ export function SmartPhoto() {
   const [resultUrl, setResultUrl] = useState<string | null>(null)
   const [stage, setStage] = useState({ label: 'Cropping to size', fraction: 0 })
   const [metSize, setMetSize] = useState(true)
+  const [padded, setPadded] = useState(false)
   /** The quality the encoder settled on, which says whether headroom is spendable. */
   const [resultQuality, setResultQuality] = useState(1)
 
@@ -325,12 +326,16 @@ export function SmartPhoto() {
       await nextFrame()
       const result = await compressToTarget(canvas, {
         maxBytes: kbToBytes(target.maxKb),
+        // The floor the form states, so a photo that encodes below it is
+        // brought up to size rather than handed back destined for rejection.
+        minBytes: target.minKb ? kbToBytes(target.minKb) : undefined,
         onProgress: (fraction) =>
           setStage({ label: 'Finding the best quality that fits', fraction: 0.15 + fraction * 0.8 }),
       })
       releaseCanvas(canvas)
 
       setStage({ label: 'Almost there', fraction: 1 })
+      setPadded(result.padded)
       setResultBlob(result.blob)
       setResultUrl(URL.createObjectURL(result.blob))
       setMetSize(result.metTarget)
@@ -350,6 +355,7 @@ export function SmartPhoto() {
     setCrop(null)
     setResultBlob(null)
     setResultUrl(null)
+    setPadded(false)
     setError(null)
     setAssessment(null)
     photoRef.current?.close()
@@ -767,11 +773,13 @@ export function SmartPhoto() {
                   : undefined
             }
             note={
-              mode === 'sizeFirst'
-                ? assessment?.largest.atSourceLimit && assessment.chosen
-                  ? `That is your photo at its full size — ${outDims.width}×${outDims.height} px. It came to ${formatBytes(resultBlob.size)} of the ${formatBytes(budgetBytes)} allowed, and enlarging it further would only invent detail that was never in the photo.`
-                  : undefined
-                : (explainMaxQuality({ quality: resultQuality, bytes: resultBlob.size }, target) ?? undefined)
+              padded
+                ? `Padded up to ${target.minKb} KB to clear this form's minimum — the photo itself is untouched, at full quality.`
+                : mode === 'sizeFirst'
+                  ? assessment?.largest.atSourceLimit && assessment.chosen
+                    ? `That is your photo at its full size — ${outDims.width}×${outDims.height} px. It came to ${formatBytes(resultBlob.size)} of the ${formatBytes(budgetBytes)} allowed, and enlarging it further would only invent detail that was never in the photo.`
+                    : undefined
+                  : (explainMaxQuality({ quality: resultQuality, bytes: resultBlob.size }, target) ?? undefined)
             }
             onStartOver={reset}
             startOverLabel="Another photo"

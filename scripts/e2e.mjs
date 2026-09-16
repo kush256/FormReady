@@ -157,9 +157,13 @@ async function main() {
   await page.waitForSelector('text=Your photo is ready', { timeout: 20000 })
   const plain = await page.locator('main').innerText()
   const plainKb = [...plain.matchAll(/([\d.]+)\s*(KB|MB)/g)].map((m) => (m[2] === 'MB' ? parseFloat(m[1]) * 1024 : parseFloat(m[1])))[1]
-  check('A plain photo really does fall under the minimum', plainKb < 20, `${plainKb} KB against a 20 KB floor`)
-  check('Falling under the minimum is flagged, not passed', !plain.includes('Meets every requirement'), plain.slice(0, 90).replace(/\n/g, ' '))
-  check('The rejection risk is spelled out', /may be rejected/i.test(plain))
+  // A plain photo encodes below SSC's 20 KB floor even at full quality, and
+  // 200×230 is the form's own dimension, so there is nothing left to spend.
+  // This used to be reported as a rejection risk and left there; the file is
+  // now brought up to the floor instead, and says so.
+  check('A plain photo is brought up to the form’s minimum', plainKb >= 20 && plainKb <= 50, `${plainKb} KB into SSC’s 20–50 KB band`)
+  check('Meeting the band is then reported as met', plain.includes('Meets every requirement'), plain.slice(0, 90).replace(/\n/g, ' '))
+  check('And the padding is disclosed rather than slipped in', /Padded up to 20 KB/i.test(plain), plain.slice(0, 120).replace(/\n/g, ' '))
 
   // ---- A result far under its limit is explained, not left looking broken ----
   // 413x531 holds only so much detail. When the encoder is already at maximum,
@@ -361,10 +365,10 @@ async function main() {
   check('A photographed signature reports before and after', /BEFORE/i.test(sigResult) && /AFTER/i.test(sigResult), sigResult.slice(0, 70).replace(/\n/g, ' '))
   const sigAfterKb = [...sigResult.matchAll(/([\d.]+)\s*KB/g)].map((m) => parseFloat(m[1]))[1]
   check('And the after figure is the real file size', sigAfterKb > 0 && sigAfterKb <= 20, `${sigAfterKb} KB against a 20 KB ceiling`)
-  check('Blue ink detected', (await page.locator('text=Blue ink detected').count()) > 0)
+  check('Blue ink detected', (await page.locator('text=This looks like blue ink').count()) > 0)
   await page.locator('button:has-text("Convert to black ink")').click()
   await page.waitForTimeout(800)
-  check('Blue ink warning clears after converting', (await page.locator('text=Blue ink detected').count()) === 0)
+  check('Blue ink warning clears after converting', (await page.locator('text=This looks like blue ink').count()) === 0)
   const sig = await page.locator('main').innerText()
   check('Signature hits 140×60', sig.includes('140×60 px'))
 
@@ -375,7 +379,67 @@ async function main() {
   await page.waitForSelector('text=Frame your signature')
   await page.locator('button:has-text("Prepare signature")').click()
   await page.waitForSelector('text=Your signature is ready', { timeout: 20000 })
-  check('Black ink not falsely flagged', (await page.locator('text=Blue ink detected').count()) === 0)
+  check('Black ink not falsely flagged', (await page.locator('text=This looks like blue ink').count()) === 0)
+
+  // ---- Signature: a form's smallest size is a requirement, not a suggestion ----
+  // SSC asks for 10-20 KB at 140×60. Ink on white paper encodes to a few
+  // kilobytes at those dimensions, and quality is already at its ceiling, so
+  // the app produced 5.4 KB, said it could not be helped, and left the
+  // candidate with a file that would be rejected. Nothing in the suite asserted
+  // a signature ever met a minimum, which is how that shipped.
+  async function sscSignature(file) {
+    await openTool(page, 'gov-exams/ssc-cgl')
+    await page.waitForSelector('text=documents to prepare')
+    await page.locator('text=Signature').first().click()
+    await page.waitForSelector('text=Add your signature')
+    await page.getByLabel('This form also states a smallest size').check()
+    await page.waitForTimeout(150)
+    await pickFile(page, () => page.locator('button:has-text("Choose from Gallery")').click(), [`${A}/${file}`])
+    await page.waitForSelector('text=Frame your signature')
+    await page.locator('button:has-text("Prepare signature")').click()
+    await page.waitForSelector('text=Your signature is ready', { timeout: 20000 })
+    // Measured off the produced file rather than the screen, so this cannot
+    // pass on a label while the bytes say otherwise.
+    return page.evaluate(async () => {
+      const img = document.querySelector('main img')
+      const blob = await (await fetch(img.src)).blob()
+      const bitmap = await createImageBitmap(blob)
+      return { bytes: blob.size, width: bitmap.width, height: bitmap.height }
+    })
+  }
+
+  const sscSig = await sscSignature('blue-signature.jpg')
+  check(
+    'A signature reaches the smallest size the form demands',
+    sscSig.bytes >= 10 * 1024 && sscSig.bytes <= 20 * 1024,
+    `${(sscSig.bytes / 1024).toFixed(1)} KB into SSC's 10–20 KB band`,
+  )
+  // Padding that broke the picture would be worse than the problem it solves.
+  check(
+    'And the padded file is still a readable 140×60 image',
+    sscSig.width === 140 && sscSig.height === 60,
+    `${sscSig.width}×${sscSig.height}`,
+  )
+  check(
+    'The padding is disclosed, not slipped in',
+    /Padded up to 10 KB/i.test(await page.locator('main').innerText()),
+  )
+
+  // Converting ink greyscales and stretches levels, which makes the file
+  // smaller — so this used to push a signature further under the floor, and
+  // then replace the warning about it with a cheerful confirmation.
+  await page.locator('button:has-text("Convert to black ink")').click()
+  await page.waitForTimeout(800)
+  const converted = await page.evaluate(async () => {
+    const img = document.querySelector('main img')
+    const blob = await (await fetch(img.src)).blob()
+    return blob.size
+  })
+  check(
+    'Converting to black ink keeps it above the floor',
+    converted >= 10 * 1024 && converted <= 20 * 1024,
+    `${(converted / 1024).toFixed(1)} KB after conversion`,
+  )
 
   // ---- Compress PDF: image-heavy, with timing ----
   await openTool(page, 'compress-pdf')

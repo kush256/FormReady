@@ -80,6 +80,7 @@ export function SignatureMaker() {
   const [metSize, setMetSize] = useState(true)
   const [blueInk, setBlueInk] = useState(false)
   const [convertedToBlack, setConvertedToBlack] = useState(false)
+  const [padded, setPadded] = useState(false)
   const cropCanvas = useRef<HTMLCanvasElement | null>(null)
 
   const aspect = useMemo(() => width / height, [width, height])
@@ -114,7 +115,14 @@ export function SignatureMaker() {
 
   async function encodeCurrentCanvas() {
     const canvas = cropCanvas.current!
-    const result = await compressToTarget(canvas, { maxBytes: kbToBytes(maxKb), minQuality: 0.3 })
+    const result = await compressToTarget(canvas, {
+      maxBytes: kbToBytes(maxKb),
+      // The floor the form states, so a signature that encodes below it is
+      // brought up to size rather than handed back destined for rejection.
+      minBytes: spec.minKb ? kbToBytes(spec.minKb) : undefined,
+      minQuality: 0.3,
+    })
+    setPadded(result.padded)
     setResultBlob(result.blob)
     setResultUrl((previous) => {
       if (previous) URL.revokeObjectURL(previous)
@@ -189,6 +197,7 @@ export function SignatureMaker() {
       return null
     })
     setDrawn(false)
+    setPadded(false)
     setSourceBytes(0)
     setImg((previous) => {
       releaseImage(previous)
@@ -323,16 +332,6 @@ export function SignatureMaker() {
 
         {step === 'result' && resultUrl && resultBlob && (
           <div className="space-y-4">
-            {blueInk && (
-              <Notice
-                tone="danger"
-                title="Blue ink detected"
-                actions={[{ label: 'Convert to black ink', onClick: convertInk }]}
-              >
-                SSC, UPSC and IBPS ask for signatures in black ink. Blue is one of the most common reasons a signature
-                is rejected as unclear.
-              </Notice>
-            )}
             <ResultView
               heading="Your signature is ready"
               blob={resultBlob}
@@ -348,20 +347,41 @@ export function SignatureMaker() {
                 ...(spec.minKb ? [{ label: `≥ ${spec.minKb} KB`, ok: metMinimum }] : []),
                 { label: blueInk ? 'Blue ink' : 'Black ink', ok: !blueInk },
               ]}
+              // Only things actually wrong. A confirmation that the ink was
+              // converted used to head this chain, which hid the fact that the
+              // file was still under the form's floor behind a cheerful note.
               warning={
-                convertedToBlack
-                  ? 'Ink converted to black and the paper cleaned to white.'
-                  : !metSize
-                    ? `Couldn't fit under ${maxKb} KB at usable quality.`
-                    : !metMinimum
-                      ? `This form asks for at least ${spec.minKb} KB and your signature came to ${formatBytes(resultBlob.size)}. Ink on white paper compresses very small, so at ${width}×${height} px it may not be able to reach the floor — larger dimensions are the only thing that adds bytes. Uploading this may be rejected.`
-                    : drawn
-                      ? 'Drawn on screen, trimmed to the ink and fitted to size.'
-                      : undefined
+                !metSize
+                  ? `Couldn't fit under ${maxKb} KB at usable quality.`
+                  : !metMinimum
+                    ? `This form asks for at least ${spec.minKb} KB and your signature came to ${formatBytes(resultBlob.size)}. Ink on white paper compresses to very little, and at ${width}×${height} px there is no quality left to spend — larger dimensions are the only thing that would add real detail. Uploading this may be rejected.`
+                    : undefined
+              }
+              // Everything that went right and is worth knowing, in one place.
+              note={
+                [
+                  padded &&
+                    `Padded up to ${spec.minKb} KB to clear this form's minimum — the signature itself is untouched, at full quality.`,
+                  convertedToBlack && 'Ink converted to black and the paper cleaned to white.',
+                  drawn && 'Drawn on screen, trimmed to the ink and fitted to size.',
+                ]
+                  .filter(Boolean)
+                  .join(' ') || undefined
               }
               onStartOver={reset}
               startOverLabel="Another signature"
             />
+
+            {blueInk && (
+              <Notice
+                tone="warn"
+                title="This looks like blue ink"
+                actions={[{ label: 'Convert to black ink', onClick: convertInk }]}
+              >
+                SSC, IBPS and UPSC all ask for signatures in black ink on white paper, and a blue one is a common
+                reason an application is sent back. Convert it here if your form says black.
+              </Notice>
+            )}
           </div>
         )}
       </main>

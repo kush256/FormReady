@@ -206,7 +206,65 @@ export interface CompressResult {
   quality: number
   bytes: number
   metTarget: boolean
+  /** True when filler was added to reach a stated minimum. The image is untouched. */
+  padded: boolean
 }
+
+/** A JPEG comment segment carries at most this much payload. */
+const COMMENT_PAYLOAD_MAX = 65533
+
+/**
+ * Brings a JPEG up to a minimum file size without altering the image.
+ *
+ * A comment segment is part of the JPEG format and skipped by every decoder, so
+ * the picture that comes out the other side is identical, pixel for pixel, at
+ * the quality it was encoded with. Only the file gets bigger.
+ *
+ * This exists because some forms state a *smallest* size as well as a largest,
+ * and at the dimensions they also dictate there is no way to reach it by
+ * encoding: a signature is ink on white paper, which compresses to almost
+ * nothing, and quality is already at its ceiling long before the floor is met.
+ * SSC asks for at least 10 KB at 140×60, where a real signature encodes to
+ * eight and a half.
+ */
+export async function padJpegToMinimum(blob: Blob, minBytes: number): Promise<Blob> {
+  const needed = minBytes - blob.size
+  if (needed <= 0) return blob
+
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  // Every JPEG opens with SOI, and the comment goes directly after it so a
+  // decoder meets it before any image data. Anything else, leave alone.
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return blob
+
+  const filler: number[] = []
+  let left = needed
+  while (left > 0) {
+    // Four bytes of marker and length ride on top of every payload, so a short
+    // top-up can overshoot by a handful of bytes. That is well inside the gap
+    // between a form's floor and its ceiling.
+    const payload = Math.min(COMMENT_PAYLOAD_MAX, Math.max(1, left - 4))
+    const length = payload + 2
+    filler.push(0xff, 0xfe, length >> 8, length & 0xff)
+    for (let i = 0; i < payload; i++) filler.push(0x20)
+    left -= payload + 4
+  }
+
+  const out = new Uint8Array(bytes.length + filler.length)
+  out.set(bytes.subarray(0, 2), 0)
+  out.set(filler, 2)
+  out.set(bytes.subarray(2), 2 + filler.length)
+  return new Blob([out], { type: 'image/jpeg' })
+}
+
+/**
+ * How far padding may stretch a file to meet a stated minimum.
+ *
+ * Topping 8.5 KB up to a 10 KB floor is a formality. Inflating it to 100 KB,
+ * where nine tenths of what the candidate uploads is filler, is not something
+ * to hand someone for a government form without saying so — past this point the
+ * honest refusal, and the advice to use larger dimensions, is the better answer.
+ */
+const MAX_PADDING_RATIO = 4
 
 /**
  * The best a JPEG encoder will do. Worth preferring whenever it fits: at the
@@ -232,6 +290,8 @@ export async function compressToTarget(
   canvas: HTMLCanvasElement,
   opts: {
     maxBytes: number
+    /** A floor the form states. Reached by padding when encoding cannot get there. */
+    minBytes?: number
     mimeType?: 'image/jpeg' | 'image/webp'
     minQuality?: number
     /** Reports 0..1 as attempts complete, so the caller can show real progress. */
@@ -244,9 +304,24 @@ export async function compressToTarget(
   let done = 0
   const totalSteps = 2 + SEARCH_STEPS
   const step = () => opts.onProgress?.(Math.min(0.99, ++done / totalSteps))
-  const finish = <T,>(result: T): T => {
+  const finish = async (result: CompressResult): Promise<CompressResult> => {
     opts.onProgress?.(1)
-    return result
+    const floor = opts.minBytes
+    // Only worth doing when the file is genuinely short of a stated floor, the
+    // floor fits under the ceiling, and the gap is one padding should bridge.
+    if (
+      !floor ||
+      mimeType !== 'image/jpeg' ||
+      result.bytes >= floor ||
+      floor > opts.maxBytes ||
+      !result.metTarget ||
+      floor > result.bytes * MAX_PADDING_RATIO
+    ) {
+      return result
+    }
+    const padded = await padJpegToMinimum(result.blob, floor)
+    if (padded.size === result.bytes) return result
+    return { ...result, blob: padded, bytes: padded.size, padded: true }
   }
 
   // Nothing to gain from the search when the budget already covers the best
@@ -254,7 +329,7 @@ export async function compressToTarget(
   const finest = await canvasToBlob(canvas, mimeType, TOP_QUALITY)
   step()
   if (finest.size <= opts.maxBytes) {
-    return finish({ blob: finest, quality: TOP_QUALITY, bytes: finest.size, metTarget: true })
+    return finish({ blob: finest, quality: TOP_QUALITY, bytes: finest.size, metTarget: true, padded: false })
   }
 
   // Check the floor — if even minimum quality is too big, the dimensions are
@@ -262,7 +337,7 @@ export async function compressToTarget(
   const floorBlob = await canvasToBlob(canvas, mimeType, minQuality)
   step()
   if (floorBlob.size > opts.maxBytes) {
-    return finish({ blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: false })
+    return finish({ blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: false, padded: false })
   }
 
   let lo = minQuality
@@ -274,7 +349,7 @@ export async function compressToTarget(
     const blob = await canvasToBlob(canvas, mimeType, mid)
     step()
     if (blob.size <= opts.maxBytes) {
-      best = { blob, quality: mid, bytes: blob.size, metTarget: true }
+      best = { blob, quality: mid, bytes: blob.size, metTarget: true, padded: false }
       lo = mid
     } else {
       hi = mid
@@ -282,7 +357,13 @@ export async function compressToTarget(
   }
 
   if (best) return finish(best)
-  return finish({ blob: floorBlob, quality: minQuality, bytes: floorBlob.size, metTarget: floorBlob.size <= opts.maxBytes })
+  return finish({
+    blob: floorBlob,
+    quality: minQuality,
+    bytes: floorBlob.size,
+    metTarget: floorBlob.size <= opts.maxBytes,
+    padded: false,
+  })
 }
 
 /**
@@ -484,7 +565,7 @@ export async function compressPngToTarget(
 ): Promise<CompressResult> {
   const plain = await canvasToBlob(canvas, 'image/png')
   if (plain.size <= maxBytes) {
-    return { blob: plain, quality: 1, bytes: plain.size, metTarget: true }
+    return { blob: plain, quality: 1, bytes: plain.size, metTarget: true, padded: false }
   }
 
   const ctx = canvas.getContext('2d')!
@@ -501,7 +582,7 @@ export async function compressPngToTarget(
     ctx.putImageData(scratch, 0, 0)
     const blob = await canvasToBlob(canvas, 'image/png')
     if (blob.size <= maxBytes) {
-      best = { blob, quality: PNG_LEVELS[mid] / 256, bytes: blob.size, metTarget: true }
+      best = { blob, quality: PNG_LEVELS[mid] / 256, bytes: blob.size, metTarget: true, padded: false }
       // It fits, so try to keep more colour than this.
       hi = mid - 1
     } else {
@@ -518,6 +599,7 @@ export async function compressPngToTarget(
       quality: PNG_LEVELS[PNG_LEVELS.length - 1] / 256,
       bytes: floor.size,
       metTarget: floor.size <= maxBytes,
+      padded: false,
     }
   }
 
