@@ -528,8 +528,18 @@ function yieldToUi(force = false): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-/** Leaves headroom for the PDF's own structure on top of the page images. */
-const STRUCTURE_HEADROOM = 0.92
+/**
+ * Leaves headroom for the PDF's own structure on top of the page images.
+ *
+ * Measured rather than assumed: on a 224-page book the page images came to
+ * 28.25 MB and the finished file to 28.33 MB, so the structure cost 0.3%, not
+ * the 8% this used to hold back. That difference is most of the reason a
+ * document asked for 30 MB came back at 27 — the compressor was never aiming
+ * at the limit in the first place. What is kept covers the fonts and page
+ * objects of a short document, where the fixed part of a PDF is a much larger
+ * share of a much smaller file.
+ */
+const STRUCTURE_HEADROOM = 0.97
 const MAX_QUALITY = 0.82
 
 /**
@@ -597,8 +607,24 @@ const PDF_LIB_HOLD_BYTES = 8 * 1024 * 1024
 /** Reading the operator list of every page is only worth it on shorter documents. */
 const PLAN_MAX_PAGES = 60
 
-/** Pages measured before deciding whether rasterising the rest is worth it. */
-const SAMPLE_PAGES = 3
+/**
+ * Pages measured before committing to rendering the rest.
+ *
+ * Three was enough for the question this sampling was first added to answer —
+ * is rasterising this document worth doing at all. It is nowhere near enough
+ * for the question it is now also asked: what will the finished document
+ * weigh. On a 224-page book, three pages mispredicted the final size by 11%,
+ * and since the settings are corrected against that prediction, the document
+ * came out a tenth under its limit with the quality that would have filled it
+ * left unspent.
+ *
+ * So it scales with length, at roughly one page in twelve. Twelve renders out
+ * of a few hundred is a few percent of the work, and far cheaper than the
+ * second full pass a bad prediction would otherwise cost.
+ */
+function sampleCount(pages: number): number {
+  return clamp(Math.ceil(pages / 12), 4, 12)
+}
 
 /**
  * A long run has to be worth the wait.
@@ -643,8 +669,8 @@ const REFINE_THRESHOLD = 1.02
  * upload limits, so a file over the line is rejected outright, where one a
  * little under it is simply accepted.
  */
-const GROWTH_THRESHOLD = 0.9
-const GROWTH_AIM = 0.95
+const GROWTH_THRESHOLD = 0.96
+const GROWTH_AIM = 0.97
 
 /** Progress is divided up front so the bar never jumps backwards. */
 const PLAN_BASE = 0.06
@@ -1236,8 +1262,9 @@ async function project(
   },
 ): Promise<{ bytes: number; msPerPage: number }> {
   const rasterPages = plan.filter((p) => p.rasterise)
-  const step = Math.max(1, Math.floor(rasterPages.length / SAMPLE_PAGES))
-  const samples = rasterPages.filter((_, i) => i % step === 0).slice(0, SAMPLE_PAGES)
+  const wanted = sampleCount(rasterPages.length)
+  const step = Math.max(1, Math.floor(rasterPages.length / wanted))
+  const samples = rasterPages.filter((_, i) => i % step === 0).slice(0, wanted)
 
   let totalBytes = 0
   const startedAt = performance.now()
@@ -1262,9 +1289,12 @@ async function project(
   releaseSurface(scratch)
 
   const perPage = totalBytes / Math.max(1, samples.length)
-  // Copied pages keep their original weight, which we cannot see from here, so
-  // this projection deliberately covers the rasterised pages plus overhead.
-  const projectedBytes = Math.round(perPage * rasterPages.length * 1.04)
+  // Copied pages keep their original weight, which cannot be seen from here, so
+  // this covers the rasterised pages and the little the structure adds on top.
+  // Measured at 0.3% on a 224-page book; the 4% assumed here before was the
+  // same overhead the byte budget was already holding back, counted twice, and
+  // between them they aimed the whole compressor a tenth below the limit.
+  const projectedBytes = Math.round(perPage * rasterPages.length * 1.005)
   return { bytes: projectedBytes, msPerPage: elapsed / Math.max(1, samples.length) }
 }
 

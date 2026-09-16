@@ -792,15 +792,26 @@ async function main() {
   const bookBudget = await budgetUsed('test-doc-book.pdf', 8, 'MB')
   check(
     'A scan uses the allowance it was given rather than stopping short',
-    bookBudget.percent >= 78,
-    `${bookBudget.percent}% of an 8 MB limit (74% before)`,
+    bookBudget.percent >= 88,
+    `${bookBudget.percent}% of an 8 MB limit (74% before this was corrected)`,
+  )
+
+  // The reported file's own shape. A long, large scan takes a different path
+  // through the compressor — no page inspection, no parsed document, every page
+  // rasterised from a projection made off a few samples — and that path was
+  // aiming a tenth below the limit before anything was rendered.
+  const longBudget = await budgetUsed('test-doc-longbook.pdf', 27, 'MB')
+  check(
+    'A long scan aims at the limit, not a tenth below it',
+    longBudget.percent >= 90,
+    `${longBudget.percent}% of a 27 MB limit`,
   )
 
   const heavyBudget = await budgetUsed('test-doc-heavy.pdf', 700, 'KB')
   check(
     'A document with room to spare is not left at half the limit',
     heavyBudget.percent >= 45,
-    `${heavyBudget.percent}% of a 700 KB limit (35% before)`,
+    `${heavyBudget.percent}% of a 700 KB limit (35% before this was corrected)`,
   )
 
   // ---- A squeezed target says so before the work, not after ----
