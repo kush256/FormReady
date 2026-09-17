@@ -1237,6 +1237,97 @@ async function main() {
     check('Scanned text keeps a readable resolution', dpi >= 88, `${dpi.toFixed(0)} DPI at ${widest}x${tallest}`)
   }
 
+  // ---- Re-encoded pages must still have their words on them ----
+  // Reported from a phone: a 29 MB, 220-page e-book compressed to 15 MB hit its
+  // size target exactly and came back with every word on every page replaced by
+  // a hollow rectangle. Compression runs in a worker, which has no document, and
+  // pdf.js hands fonts to the browser as CSS `@font-face` rules — an attempt
+  // that throws there, is caught, and quietly substitutes a different font. For
+  // an embedded subset, whose character codes are positions inside that one
+  // font rather than letters, every code then lands on nothing.
+  //
+  // This is measured rather than eyeballed: ink is counted over the lower half
+  // of the re-encoded first page, which both fixtures fill with body text. On
+  // the build before the fix the embedded-font book measured 0.00% — not faint,
+  // not soft, nothing at all — against 2.13% once the words were drawn.
+  async function inkOfFirstPage(savedPath) {
+    const { PDFDocument: PDFDoc, PDFName } = await import('pdf-lib')
+    const doc = await PDFDoc.load(fs.readFileSync(savedPath), { ignoreEncryption: true })
+    const xo = doc.getPage(0).node.Resources()?.lookup(PDFName.of('XObject'))
+    let best = null
+    if (xo) {
+      for (const key of xo.keys()) {
+        const img = xo.lookup(key)
+        const w = img?.dict?.get(PDFName.of('Width'))?.asNumber?.()
+        const h = img?.dict?.get(PDFName.of('Height'))?.asNumber?.()
+        if (w && h && (!best || w * h > best.w * best.h)) best = { w, h, bytes: img.contents }
+      }
+    }
+    if (!best) return null
+    // Measured on its own page: a megabyte of base64 handed to `evaluate` as an
+    // argument gets collected mid-call, where the same bytes inlined do not.
+    const shot = await browser.newPage()
+    try {
+      await shot.setContent(
+        `<img id="p" src="data:image/jpeg;base64,${Buffer.from(best.bytes).toString('base64')}">`,
+      )
+      await shot.waitForFunction(() => {
+        const el = document.getElementById('p')
+        return el && el.complete && el.naturalWidth > 0
+      })
+      return await shot.evaluate(() => {
+        const img = document.getElementById('p')
+        const c = document.createElement('canvas')
+        c.width = img.naturalWidth
+        c.height = img.naturalHeight
+        const ctx = c.getContext('2d')
+        ctx.drawImage(img, 0, 0)
+        // Below the photograph, where only words belong.
+        const y0 = Math.floor(c.height * 0.45)
+        const { data } = ctx.getImageData(0, y0, c.width, Math.floor(c.height * 0.95) - y0)
+        let ink = 0
+        let total = 0
+        for (let i = 0; i < data.length; i += 4) {
+          const luma = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) / 255
+          total++
+          if (luma < 0.55) ink++
+        }
+        return { w: c.width, h: c.height, inkPct: (ink / total) * 100 }
+      })
+    } finally {
+      await shot.close()
+    }
+  }
+
+  async function wordsSurvive(file, target, unit, label, wasBefore) {
+    savedTo.clear()
+    await compressTo(file, target, unit)
+    await page.locator('button:has-text("Compress PDF")').click()
+    await page.waitForSelector('button:has-text("Save to device")', { timeout: 240000 })
+    const rasterised = /re-encoded/.test(await page.locator('main').innerText())
+    await page.locator('button:has-text("Save to device")').click()
+    await page.waitForTimeout(1500)
+    const saved = [...savedTo.values()][0]
+    const ink = saved ? await inkOfFirstPage(saved) : null
+    // A page that was copied rather than re-encoded never touches the renderer,
+    // so it would pass this check without testing anything.
+    check(`${label}: the page was re-encoded, so this tests the renderer`, rasterised)
+    check(
+      `${label}: the re-encoded page still has its words on it`,
+      ink !== null && ink.inkPct >= 1,
+      ink ? `${ink.inkPct.toFixed(2)}% ink at ${ink.w}x${ink.h} (${wasBefore} before the fix)` : 'no page image',
+    )
+  }
+
+  // The reported shape: fonts carried inside the file as subsets, which is what
+  // a publisher's export produces and what has nothing to fall back to.
+  await wordsSurvive('test-doc-embedded.pdf', 900, 'KB', 'Embedded subset fonts', '0.00%')
+  // The other half of the same fix. Turning off the CSS font path alone fixed
+  // the case above and silently emptied this one, because a font the file only
+  // names has to be fetched from pdf.js's own data once the browser is no
+  // longer being asked to find it.
+  await wordsSurvive('test-doc-illustrated.pdf', 900, 'KB', 'Named standard fonts', '4.50%')
+
   // ---- Long text document: must bail out fast, not grind through 300 pages ----
   await openTool(page, 'compress-pdf')
   await page.waitForSelector('text=Reduce PDF size')

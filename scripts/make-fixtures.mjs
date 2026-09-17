@@ -319,9 +319,103 @@ async function longTextPdf(name, pages) {
   console.log('wrote', name, (bytes.byteLength / 1024 / 1024).toFixed(1), 'MB', `(${pages} pages)`)
 }
 
+/**
+ * An illustrated book: real selectable text with a photograph on every page.
+ *
+ * This is the shape that came back as boxes. A reported 220-page e-book was
+ * compressed to its limit and every word on every page rendered as a hollow
+ * rectangle — the placeholder a renderer draws when a font resolves to no
+ * usable glyph. Text-only pages are copied untouched and so can never show it;
+ * a scanned page has no font to draw in the first place. It takes a page that
+ * carries both, because the image is what sends the page to be redrawn and the
+ * text is what gets destroyed on the way.
+ *
+ * The font matters as much as the mixture: `StandardFonts.Helvetica` embeds no
+ * font program, exactly like the standard fonts a publisher's export leaves
+ * unembedded, so the renderer has to find the glyphs for itself.
+ */
+async function illustratedBookPdf(name, pages) {
+  const doc = await PDFDocument.create()
+  const body = await doc.embedFont(StandardFonts.TimesRoman)
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold)
+  const photo = await doc.embedJpg(fs.readFileSync(path.join(OUT, 'fixture-noise.jpg')))
+
+  const LINE = 'The mental and biological parts are two sides of the same thing, and'
+  for (let i = 0; i < pages; i++) {
+    const p = doc.addPage([595, 842])
+    // The photograph: what marks this page for re-encoding rather than copying.
+    p.drawImage(photo, { x: 90, y: 560, width: 415, height: 240 })
+    p.drawText(`Anger: ${i + 1} of ${pages}`, { x: 90, y: 536, size: 10, font: bold })
+    // Real vector text in a font with no program embedded, which is the part
+    // that came back as boxes.
+    p.drawText(`Chapter ${Math.floor(i / 8) + 1}`, { x: 90, y: 500, size: 17, font: bold })
+    for (let l = 0; l < 22; l++) {
+      p.drawText(LINE, { x: 90, y: 468 - l * 19, size: 11, font: body })
+    }
+  }
+  const bytes = await doc.save()
+  fs.writeFileSync(path.join(OUT, name), bytes)
+  console.log(
+    'wrote',
+    name,
+    (bytes.byteLength / 1024 / 1024).toFixed(1),
+    'MB',
+    `(${pages} pages, photo + live text on each)`,
+  )
+}
+
 await mixedPdf('test-doc-mixed.pdf')
 await longTextPdf('test-doc-long-text.pdf', 300)
 await unevenPdf('test-doc-uneven.pdf', 24)
+await illustratedBookPdf('test-doc-illustrated.pdf', 24)
+
+/**
+ * The same illustrated book, but with its fonts embedded as subsets.
+ *
+ * This is the one that actually reproduced the reported failure, and the
+ * difference from `illustratedBookPdf` is the whole point. A standard font is
+ * named, not carried, so a renderer that loses it substitutes another and the
+ * letters still arrive. An embedded subset is carried, and its character codes
+ * are positions inside that one font rather than letters — so a renderer that
+ * loses it has nothing to fall back to, and every code lands on empty. Measured
+ * on the pre-change build: the heading came back as hollow boxes and the body
+ * text did not come back at all.
+ *
+ * Chromium's own PDF export is what embeds them, as three subsetted TrueType
+ * fonts with Identity-H encoding — the same shape a publisher's e-book export
+ * produces, which is what the reported file was.
+ */
+async function embeddedFontBookPdf(name, pages) {
+  const photo = fs.readFileSync(path.join(OUT, 'fixture-noise.jpg')).toString('base64')
+  const LINE =
+    'The mental and biological parts are two sides of the same thing, and if you understand that you are already well on the way to becoming a fantastic mind reader.'
+  let sections = ''
+  for (let i = 0; i < pages; i++) {
+    sections += `<section><img src="data:image/jpeg;base64,${photo}"><p class="cap"><b>Anger:</b> ${i + 1} of ${pages}</p><h1>Chapter ${Math.floor(i / 8) + 1}</h1>${`<p>${LINE}</p>`.repeat(6)}</section>`
+  }
+  await page.setContent(
+    `<!doctype html><meta charset="utf-8"><style>
+      @page { size: A4; margin: 16mm; }
+      body { font-family: "Liberation Serif", Georgia, serif; font-size: 11pt; text-align: justify; }
+      section { page-break-after: always; }
+      img { width: 100%; height: 330px; object-fit: cover; }
+      h1 { font-family: "Liberation Sans", Arial, sans-serif; color: #1a1aff; font-size: 18pt; margin: 6pt 0; }
+      .cap { font-size: 9pt; margin: 4pt 0; }
+      p { margin: 0 0 6pt; }
+    </style>${sections}`,
+  )
+  await page.pdf({ path: path.join(OUT, name), format: 'A4', printBackground: true })
+  const bytes = fs.statSync(path.join(OUT, name)).size
+  console.log(
+    'wrote',
+    name,
+    (bytes / 1024 / 1024).toFixed(1),
+    'MB',
+    `(${pages} pages, photo + live text in embedded subset fonts)`,
+  )
+}
+
+await embeddedFontBookPdf('test-doc-embedded.pdf', 24)
 
 /**
  * A scanned book: every page is a photograph of text, with no text layer.

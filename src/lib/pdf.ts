@@ -14,6 +14,17 @@ import {
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
+/**
+ * Where the build put pdf.js's font and character-map data.
+ *
+ * Root-relative because a worker resolves these against the page's origin, and
+ * that origin is the app's own root under `vite preview` and inside the Android
+ * WebView alike. The copying is done by `pdfjsAssets` in `vite.config.ts`; these
+ * two paths and that plugin's output have to agree.
+ */
+const STANDARD_FONTS_URL = '/pdfjs/standard_fonts/'
+const CMAPS_URL = '/pdfjs/cmaps/'
+
 const A4_WIDTH = 595.28
 const A4_HEIGHT = 841.89
 const PAGE_MARGIN = 24
@@ -129,6 +140,57 @@ class WorkerFilterFactory {
 }
 
 /**
+ * Fetches pdf.js's own font and character-map data from inside a worker.
+ *
+ * pdf.js reads these with a helper that begins `isValidFetchUrl(url,
+ * document.baseURI)`, and a worker has no document, so asking for them there
+ * fails with "document is not defined" before a byte is read — the same shape
+ * as the `document.URL` crash that `WorkerFilterFactory` above exists for.
+ *
+ * `fetch` itself works perfectly well in a worker; only pdf.js's wrapper does
+ * not. So these do the same job without the wrapper. pdf.js constructs them
+ * itself and calls `fetch`, which is why the shape of that method is fixed
+ * rather than a matter of taste.
+ */
+class WorkerStandardFontDataFactory {
+  private baseUrl: string | null
+
+  constructor({ baseUrl = null }: { baseUrl?: string | null }) {
+    this.baseUrl = baseUrl
+  }
+
+  async fetch({ filename }: { filename: string }): Promise<Uint8Array> {
+    if (!this.baseUrl) throw new Error('No standardFontDataUrl was configured.')
+    const response = await fetch(`${this.baseUrl}${filename}`)
+    if (!response.ok) throw new Error(`Could not read font data: ${filename}`)
+    return new Uint8Array(await response.arrayBuffer())
+  }
+}
+
+class WorkerCMapReaderFactory {
+  private baseUrl: string | null
+  private isCompressed: boolean
+
+  constructor({
+    baseUrl = null,
+    isCompressed = true,
+  }: {
+    baseUrl?: string | null
+    isCompressed?: boolean
+  }) {
+    this.baseUrl = baseUrl
+    this.isCompressed = isCompressed
+  }
+
+  async fetch({ name }: { name: string }) {
+    if (!this.baseUrl) throw new Error('No cMapUrl was configured.')
+    const response = await fetch(`${this.baseUrl}${name}${this.isCompressed ? '.bcmap' : ''}`)
+    if (!response.ok) throw new Error(`Could not read character map: ${name}`)
+    return { cMapData: new Uint8Array(await response.arrayBuffer()), isCompressed: this.isCompressed }
+  }
+}
+
+/**
  * Always copies, on purpose: pdf.js detaches whatever buffer it is handed —
  * confirmed by testing, not assumed — and `bytes` here is `fallback`
  * throughout `compressPdf`, needed live for the whole run so a worse result
@@ -138,8 +200,33 @@ async function loadPdfJsDoc(bytes: Uint8Array) {
   filters.degraded = false
   const loadingTask = pdfjsLib.getDocument({
     data: bytes.slice(),
+    // Draw glyphs from the font's own outlines rather than through CSS.
+    //
+    // pdf.js prefers to hand a font to the browser as an `@font-face` rule and
+    // let it do the rasterising. That needs a `document` to attach the rule to,
+    // and compression runs in a worker, where there is none. The attempt throws,
+    // pdf.js catches it and quietly substitutes another font — and for an
+    // embedded subset, whose character codes are positions in that specific
+    // font rather than letters, every code then lands on nothing. Measured on a
+    // 24-page book with three embedded subsets: the headings came back as rows
+    // of hollow boxes and the body text did not come back at all.
+    //
+    // Turning the CSS path off makes pdf.js walk the outlines itself, which
+    // needs no document and is what it does for headless rendering anyway. It
+    // also turns off substituting fonts the system happens to have, so the two
+    // paths below are no longer optional: without them a font the file does not
+    // carry has nothing to draw with, and its words vanish silently.
+    disableFontFace: true,
+    standardFontDataUrl: STANDARD_FONTS_URL,
+    cMapUrl: CMAPS_URL,
+    cMapPacked: true,
     ...(offscreenOnly
-      ? { CanvasFactory: OffscreenCanvasFactory, FilterFactory: WorkerFilterFactory }
+      ? {
+          CanvasFactory: OffscreenCanvasFactory,
+          FilterFactory: WorkerFilterFactory,
+          StandardFontDataFactory: WorkerStandardFontDataFactory,
+          CMapReaderFactory: WorkerCMapReaderFactory,
+        }
       : {}),
   })
   return loadingTask.promise
