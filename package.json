@@ -9,7 +9,9 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "fixtures": "node scripts/make-fixtures.mjs",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "icons": "node scripts/make-icons.mjs",
+    "store-screenshots": "node scripts/make-store-screenshots.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.1",

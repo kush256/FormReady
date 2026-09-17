@@ -16,7 +16,12 @@ export function ToolCard({ tool }: { tool: ToolDef }) {
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[15px] font-bold tracking-tight text-[var(--ink)]">{tool.name}</span>
-        <span className="block truncate text-xs text-[var(--ink-2)]">{tool.description}</span>
+        {/*
+          Wraps rather than truncating. A row carrying a spec chip has less
+          room than one without, and Signature Maker's line was cut mid-word
+          to "Prepare form signatu…" while the space below it sat empty.
+        */}
+        <span className="block text-xs leading-snug text-[var(--ink-2)]">{tool.description}</span>
       </span>
       {tool.spec && <SpecChip icon={false}>{tool.spec}</SpecChip>}
       <ChevronRightIcon width={17} height={17} className="shrink-0 text-[var(--ink-3)]" />

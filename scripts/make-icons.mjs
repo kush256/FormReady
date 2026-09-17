@@ -44,9 +44,10 @@ const page = await browser.newPage()
 await page.goto('about:blank')
 
 /**
- * @param mode  'full' square tile, 'round' circular tile, 'foreground'
- *              (transparent, inset for the adaptive-icon safe zone), or
- *              'mark' (transparent, edge to edge) for splash and web use.
+ * @param mode  'full' rounded tile, 'round' circular tile, 'foreground'
+ *              (transparent, inset for the adaptive-icon safe zone), 'store'
+ *              (full-bleed square, for the Play listing, which applies its own
+ *              mask), or 'splash' (the mark on white).
  */
 async function render(width, height, mode, colors) {
   const dataUrl = await page.evaluate(
@@ -126,7 +127,69 @@ async function render(width, height, mode, colors) {
 
       const shortest = Math.min(width, height)
 
-      if (mode === 'full' || mode === 'round') {
+      if (mode === 'feature') {
+        // Play's feature graphic. It is cropped differently on different
+        // surfaces, so the mark and the words sit as one centred group inside
+        // a generous margin rather than reaching for the edges. The group is
+        // measured and then scaled to fit, because the font that renders the
+        // tagline is whatever the machine running this happens to have.
+        const g = ctx.createLinearGradient(0, 0, width, height)
+        g.addColorStop(0, colors.blueLight)
+        g.addColorStop(1, colors.blueDark)
+        ctx.fillStyle = g
+        ctx.fillRect(0, 0, width, height)
+
+        const TITLE = 'FormReady'
+        const SUB = 'Exam photos, signatures and PDFs'
+        const font = (weight, size) => `${weight} ${size}px "DejaVu Sans", sans-serif`
+
+        let mark = height * 0.54
+        let titleSize = height * 0.16
+        let subSize = height * 0.072
+        const gap = height * 0.08
+
+        const measure = () => {
+          ctx.font = font(700, titleSize)
+          const t = ctx.measureText(TITLE).width
+          ctx.font = font(400, subSize)
+          const u = ctx.measureText(SUB).width
+          const text = Math.max(t, u)
+          // drawMark spans 0.34s left of centre and 0.486s right of it.
+          return { text, total: mark * 0.826 + gap + text }
+        }
+
+        let m = measure()
+        const maxW = width * 0.84
+        if (m.total > maxW) {
+          const k = maxW / m.total
+          mark *= k
+          titleSize *= k
+          subSize *= k
+          m = measure()
+        }
+
+        const left = (width - m.total) / 2
+        drawMark(left + mark * 0.34, height / 2, mark)
+
+        const textX = left + mark * 0.826 + gap
+        ctx.textAlign = 'left'
+        ctx.fillStyle = '#ffffff'
+        ctx.font = font(700, titleSize)
+        ctx.fillText(TITLE, textX, height / 2 + titleSize * 0.05)
+        ctx.globalAlpha = 0.85
+        ctx.font = font(400, subSize)
+        ctx.fillText(SUB, textX, height / 2 + titleSize * 0.05 + subSize * 1.65)
+        ctx.globalAlpha = 1
+      } else if (mode === 'store') {
+        // Play masks the store icon itself, so this one is a full-bleed square
+        // with no rounding of its own — a rounded tile here gets rounded twice.
+        const g = ctx.createLinearGradient(0, 0, width, height)
+        g.addColorStop(0, colors.blueLight)
+        g.addColorStop(1, colors.blueDark)
+        ctx.fillStyle = g
+        ctx.fillRect(0, 0, width, height)
+        drawMark(width / 2, height / 2, shortest * 0.6)
+      } else if (mode === 'full' || mode === 'round') {
         if (mode === 'round') {
           ctx.save()
           ctx.beginPath()
@@ -193,7 +256,8 @@ for (const [rel, w, h] of splashTargets) {
 console.log('splash screens written')
 
 fs.mkdirSync(path.resolve('store-assets'), { recursive: true })
-fs.writeFileSync(path.resolve('store-assets/icon-512.png'), await render(512, 512, 'full', colors))
-console.log('store icon written')
+fs.writeFileSync(path.resolve('store-assets/icon-512.png'), await render(512, 512, 'store', colors))
+fs.writeFileSync(path.resolve('store-assets/feature-graphic-1024x500.png'), await render(1024, 500, 'feature', colors))
+console.log('store icon and feature graphic written')
 
 await browser.close()
