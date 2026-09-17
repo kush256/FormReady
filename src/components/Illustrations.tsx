@@ -104,26 +104,6 @@ export function PhotoStackIllustration(props: Props) {
   )
 }
 
-/** A PDF waiting to be picked. */
-export function PdfIllustration(props: Props) {
-  return (
-    <Frame {...props}>
-      <Backdrop />
-      <rect x="64" y="24" width="72" height="94" rx="8" fill="var(--surface)" stroke="var(--line-strong)" strokeWidth="2" />
-      <path d="M112 24v18a4 4 0 004 4h20" stroke="var(--line-strong)" strokeWidth="2" fill="none" />
-      <g fill="var(--accent)" opacity="0.75">
-        <rect x="78" y="58" width="44" height="5" rx="2.5" />
-        <rect x="78" y="70" width="44" height="5" rx="2.5" />
-        <rect x="78" y="82" width="26" height="5" rx="2.5" />
-      </g>
-      <rect x="76" y="96" width="30" height="13" rx="3" fill="var(--accent)" />
-      <text x="91" y="106" textAnchor="middle" fontSize="9" fontWeight="700" fill="var(--surface)" fontFamily="system-ui, sans-serif">
-        PDF
-      </text>
-    </Frame>
-  )
-}
-
 /** Two files becoming one. */
 export function MergeIllustration(props: Props) {
   return (

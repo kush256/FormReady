@@ -146,8 +146,12 @@ async function render(width, height, mode, colors) {
         drawMark(width / 2, height / 2, shortest * 0.6)
         if (mode === 'round') ctx.restore()
       } else if (mode === 'foreground') {
-        // Adaptive icons keep only the middle ~66% guaranteed visible.
-        drawMark(width / 2, height / 2, shortest * 0.42)
+        // Adaptive icons show only the inner 72 of the 108-unit layer, so the
+        // mark has to be measured against that circle rather than the canvas.
+        // The badge is the part that reaches furthest out: its outer edge sits
+        // at 0.608s from the centre, which touches the mask at s = 0.548. 0.48
+        // fills the visible area while keeping the check clear of the edge.
+        drawMark(width / 2, height / 2, shortest * 0.48)
       } else if (mode === 'splash') {
         ctx.fillStyle = '#ffffff'
         ctx.fillRect(0, 0, width, height)

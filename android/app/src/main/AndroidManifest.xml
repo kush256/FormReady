@@ -11,6 +11,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+        allowBackup is left on deliberately, and it is worth being precise about
+        what that means for an app that promises files never leave the phone.
+        Android's backup never includes the cache directory, which is where a
+        prepared photo, signature or PDF is written before it is shared, so no
+        user file is in scope. What is in scope is the settings store: the
+        onboarding flag and any exam presets the user typed in. Those are the
+        user's own settings, and carrying them to a new phone is the behaviour
+        people expect. The privacy policy says so rather than leaving it implied.
+    -->
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

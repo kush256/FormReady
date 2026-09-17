@@ -284,14 +284,13 @@ export function SignatureMaker() {
             <SourceButtons onCamera={onCamera} onGallery={onGallery} />
 
             {/*
-              Worth saying before they sign rather than after: at 140×60 there
-              are only 8,400 pixels for the whole signature, and a fine
-              ballpoint line loses most of itself to that. Nothing in the app
-              can add detail back, but a thicker pen puts it there to begin with.
+              Deliberately says nothing about dimensions. It used to name the
+              spec, which read as nonsense at 1000×1000 — and the advice holds
+              at any size, because the pen is chosen before the size is known.
             */}
             <p className="text-xs leading-relaxed text-[var(--ink-2)]">
-              Sign with a bold pen if you can. {width}×{height} px is a small space, and a thin ballpoint line
-              loses its shape at that size where a thicker stroke stays clear.
+              Sign with a bold pen if you can. A thin ballpoint line loses its shape once the signature is
+              shrunk to fit a form, where a thicker stroke stays clear.
             </p>
           </>
         )}

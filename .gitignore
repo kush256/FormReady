@@ -25,3 +25,9 @@ dist-ssr
 
 # Generated test fixtures
 .fixtures
+
+# Release signing. The key is the app's permanent identity on Play — it belongs
+# on the owner's machine and in CI secrets, never in the repository.
+keystore.properties
+*.jks
+*.keystore

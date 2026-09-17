@@ -38,15 +38,6 @@ export const ImageToPdfIcon = (p: IconProps) => (
   </svg>
 )
 
-export const ResizeIcon = (p: IconProps) => (
-  <svg {...base(p)}>
-    <path d="M9 3H4a1 1 0 00-1 1v5" />
-    <path d="M15 21h5a1 1 0 001-1v-5" />
-    <path d="M21 3l-8 8" />
-    <path d="M3 21l8-8" />
-  </svg>
-)
-
 export const CompressPdfIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M6 2h9l4 4v15a1 1 0 01-1 1H6a1 1 0 01-1-1V3a1 1 0 011-1z" />
@@ -117,12 +108,6 @@ export const ChevronRightIcon = (p: IconProps) => (
 export const PlusIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M12 5v14M5 12h14" />
-  </svg>
-)
-
-export const ReorderIcon = (p: IconProps) => (
-  <svg {...base(p)}>
-    <path d="M4 8h16M4 16h16" />
   </svg>
 )
 

@@ -63,3 +63,80 @@ jobs:
         with:
           name: formready-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
+
+  # The bundle Play actually accepts. Separate from the debug job above, which
+  # stays exactly as it is because that is the APK used for testing on a phone.
+  #
+  # Gated on the signing secrets existing, so ordinary pushes and forks skip it
+  # rather than failing: the key belongs to the app owner, and until they have
+  # added it there is nothing here to sign with.
+  release:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Secrets cannot be read in a job-level `if`, so the whole job starts and
+      # every step below asks this one whether there is anything to sign with.
+      - name: Check whether a signing key is configured
+        id: signing
+        run: echo "ready=${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        if: steps.signing.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install web dependencies
+        if: steps.signing.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Build web app
+        if: steps.signing.outputs.ready == 'true'
+        run: npm run build
+
+      - name: Set up JDK 21
+        if: steps.signing.outputs.ready == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        if: steps.signing.outputs.ready == 'true'
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Sync Capacitor Android project
+        if: steps.signing.outputs.ready == 'true'
+        run: npx cap sync android
+
+      - name: Restore the signing key
+        if: steps.signing.outputs.ready == 'true'
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/upload.jks"
+
+      - name: Build signed bundle
+        if: steps.signing.outputs.ready == 'true'
+        working-directory: android
+        env:
+          FORMREADY_STORE_FILE: ${{ runner.temp }}/upload.jks
+          FORMREADY_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          FORMREADY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          FORMREADY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew bundleRelease --stacktrace
+
+      - name: Remove the key from the runner
+        if: always() && steps.signing.outputs.ready == 'true'
+        run: rm -f "$RUNNER_TEMP/upload.jks"
+
+      - name: Upload the bundle
+        if: steps.signing.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: formready-release-aab
+          path: android/app/build/outputs/bundle/release/*.aab

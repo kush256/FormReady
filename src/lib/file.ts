@@ -137,6 +137,3 @@ function downloadInBrowser(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 4000)
 }
 
-export function isNative(): boolean {
-  return Capacitor.isNativePlatform()
-}
