@@ -1,0 +1,5 @@
+# Enough for GitHub Pages to render docs/ as a small site. The only page that
+# has to resolve is the privacy policy, whose URL goes in the Play listing.
+title: FormReady
+description: On-device photo, signature and PDF tools for Indian exam forms
+theme: jekyll-theme-minimal

@@ -1,18 +1,33 @@
-*.iml
-.gradle
-.kotlin
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
-.env
-debug.keystore
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Generated test fixtures
+.fixtures
+
+# Release signing. The key is the app's permanent identity on Play — it belongs
+# on the owner's machine and in CI secrets, never in the repository.
+keystore.properties
+*.jks
+*.keystore

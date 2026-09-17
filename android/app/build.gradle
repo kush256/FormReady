@@ -1,0 +1,92 @@
+apply plugin: 'com.android.application'
+
+/**
+ * Release signing details, which are deliberately not in this repository.
+ *
+ * The upload key is the app's permanent identity on Play: whoever holds it can
+ * ship updates to every installed copy, and losing it means the app can never
+ * be updated again. So it is read from a gitignored keystore.properties beside
+ * this project, or from the environment in CI, and never committed.
+ *
+ * When neither is present the release build simply goes unsigned rather than
+ * failing, so a fresh checkout — and the debug build used for testing — still
+ * works for anyone.
+ */
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+def resolvedStoreFile = keystoreProperties['storeFile'] ?: System.getenv('FORMREADY_STORE_FILE')
+def hasSigningKey = resolvedStoreFile != null && !resolvedStoreFile.isEmpty()
+
+android {
+    namespace = "com.formready.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.formready.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (hasSigningKey) {
+                storeFile file(resolvedStoreFile)
+                storePassword keystoreProperties['storePassword'] ?: System.getenv('FORMREADY_STORE_PASSWORD')
+                keyAlias keystoreProperties['keyAlias'] ?: System.getenv('FORMREADY_KEY_ALIAS')
+                keyPassword keystoreProperties['keyPassword'] ?: System.getenv('FORMREADY_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // Left off on purpose. R8 would shrink only the Java side, which is
+            // a small part of an app whose bulk is the bundled web assets, and
+            // the failures it causes are reflective ones that appear at runtime
+            // on a user's phone rather than at build time here. Worth turning on
+            // once a release build can actually be run on a device.
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (hasSigningKey) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
