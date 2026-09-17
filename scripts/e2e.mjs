@@ -671,6 +671,7 @@ async function main() {
   await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-heavy.pdf`])
   await page.waitForSelector('text=Maximum size')
   const sizeField = page.locator('input[inputmode="numeric"], input[inputmode="decimal"]').first()
+  await sizeField.fill('10')
   await sizeField.click()
   await page.keyboard.press('Control+a')
   await page.keyboard.press('Backspace')
@@ -774,6 +775,7 @@ async function main() {
   await page.waitForSelector('text=Reduce PDF size')
   await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-locked.pdf`])
   await page.waitForSelector('text=Maximum size', { timeout: 15000 })
+  await page.locator('input[aria-label^="Maximum size"]').fill('8')
   await page.locator('button:has-text("Compress PDF")').click()
   await page.waitForTimeout(2000)
   const lockedText = await page.locator('main').innerText()
@@ -783,6 +785,7 @@ async function main() {
   await page.waitForSelector('text=Reduce PDF size')
   await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/test-doc-corrupt.pdf`])
   await page.waitForSelector('text=Maximum size', { timeout: 15000 })
+  await page.locator('input[aria-label^="Maximum size"]').fill('6')
   await page.locator('button:has-text("Compress PDF")').click()
   await page.waitForTimeout(2000)
   const corruptText = await page.locator('main').innerText()
@@ -808,8 +811,10 @@ async function main() {
     await page.waitForSelector('text=Reduce PDF size')
     await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [`${A}/${file}`])
     await page.waitForSelector('text=Maximum size', { timeout: 15000 })
-    await page.locator('input[inputmode="numeric"]').first().fill('150')
+    // The unit first: it decides whether the field takes decimals, and with no
+    // value filled in the screen picks MB for a file this size.
     await page.locator('button:has-text("KB")').first().click()
+    await page.locator('input[aria-label^="Maximum size"]').fill('150')
     await page.locator('button:has-text("Compress PDF")').click()
     await page.waitForSelector('text=Your PDF is ready', { timeout: 120000 }).catch(() => {})
     const text = await page.locator('main').innerText()
@@ -885,6 +890,16 @@ async function main() {
     longBudget.percent >= 90,
     `${longBudget.percent}% of a 27 MB limit`,
   )
+  // The other half of the reserve band below: a limit this document can afford
+  // must still be rendered at the top of the readable range. A compressor that
+  // reached the target by simply starting low would pass the check below and
+  // fail this one.
+  const roomyDpi = /(\d+)\s*DPI/.exec(longBudget.text)
+  check(
+    'A limit it can afford is rendered at full resolution, not the floor',
+    roomyDpi !== null && Number(roomyDpi[1]) >= 120,
+    roomyDpi ? `${roomyDpi[1]} DPI on a 27 MB limit` : 'no DPI reported',
+  )
 
   // A document with a rhythm, which is what every other fixture here lacks.
   // The sampler used to walk a fixed stride from page one, so on a practice
@@ -916,11 +931,102 @@ async function main() {
     detail.split('\n').find((l) => /DPI/.test(l)) ?? 'no quality reported',
   )
 
+  // ---- A limit below the comfortable floor is reached, not refused ----
+  // Reported from a phone: a 707-page scan asked for 43 MB came back at 50,
+  // reporting "120 DPI, quality 0.41" — the comfortable floor exactly — with
+  // the result telling the user to go and split the document up themselves.
+  // The resolution to reach the limit was there and the compressor would not
+  // spend it. On this fixture the same shape produced 16 MB against an 8 MB
+  // limit, at 120 DPI and quality 0.4, before the reserve band was added.
+  const squeezed = await budgetUsed('test-doc-longbook.pdf', 8, 'MB')
+  check(
+    'A limit under the comfortable floor is reached rather than refused',
+    squeezed.percent <= 100 && squeezed.percent >= 80,
+    `${squeezed.percent}% of an 8 MB limit (196% when the floor was absolute)`,
+  )
+  const squeezedDpi = /(\d+)\s*DPI/.exec(squeezed.text)
+  check(
+    'It goes below the readable band only as far as the limit demands',
+    squeezedDpi !== null && Number(squeezedDpi[1]) >= 90 && Number(squeezedDpi[1]) < 120,
+    squeezedDpi ? `${squeezedDpi[1]} DPI, inside the 90-120 reserve` : 'no DPI reported',
+  )
+  check(
+    'And says the words will look soft rather than leaving it to be discovered',
+    /soft/i.test(squeezed.text),
+    squeezed.text.split('\n').find((l) => /soft/i.test(l)) ?? 'no note about softness',
+  )
+
+  // ---- A result never hands the user homework ----
+  // "To go smaller, split the document into fewer pages" was advice that could
+  // not have helped: the pages weigh the same arriving in six files as in one,
+  // so splitting and re-merging returns the identical total.
+  const impossible = await budgetUsed('test-doc-book.pdf', 400, 'KB')
+  check(
+    'A target that truly cannot be met still stops and says so',
+    impossible.percent > 100 && /no longer be readable|stay readable/i.test(impossible.text),
+    impossible.text.split('\n').find((l) => /readable/i.test(l)) ?? `${impossible.percent}%`,
+  )
+  check(
+    'And does not tell the user to go and split the document up',
+    !/split (it|the document)/i.test(impossible.text),
+    impossible.text.split('\n').find((l) => /split/i.test(l)) ?? 'no split advice',
+  )
+
   const heavyBudget = await budgetUsed('test-doc-heavy.pdf', 700, 'KB')
   check(
     'A document with room to spare is not left at half the limit',
     heavyBudget.percent >= 45,
     `${heavyBudget.percent}% of a 700 KB limit (35% before this was corrected)`,
+  )
+
+  // ---- The screen asks for a limit rather than inventing one ----
+  // It used to open with half the file size filled in, then warn underneath
+  // that half the file size was too little for this many pages, and offer a
+  // button out of its own warning reading "Use 86 MB" on an 86 MB file. Three
+  // pieces of advice, disagreeing with each other, before any work was done.
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [
+    `${A}/test-doc-longbook.pdf`,
+  ])
+  await page.waitForSelector('text=Maximum size', { timeout: 20000 })
+  const limitField = page.locator('input[aria-label^="Maximum size"]')
+  check(
+    'The limit field starts empty rather than guessing a number',
+    (await limitField.inputValue()) === '',
+    `field read ${JSON.stringify(await limitField.inputValue())}`,
+  )
+  check(
+    'And nothing can be compressed until a limit is given',
+    await page.locator('button:has-text("Compress PDF")').isDisabled(),
+  )
+  // A file this shape is what exposes the suggestion. The comfortable limit was
+  // worked out as 150 KB a page and then clamped to the file's own size, so any
+  // document averaging less than that per page — 300 pages inside 348 KB here,
+  // 707 pages inside 86 MB on the phone that reported it — made the clamp bite
+  // and the button read "use the size you started with". A long scan whose
+  // pages are already heavier than 150 KB never reaches the clamp and so cannot
+  // show the bug at all.
+  await openTool(page, 'compress-pdf')
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [
+    `${A}/test-doc-long-text.pdf`,
+  ])
+  await page.waitForSelector('text=Maximum size', { timeout: 20000 })
+  const longTextBytes = fs.statSync(`${A}/test-doc-long-text.pdf`).size
+  await page.locator('input[aria-label^="Maximum size"]').fill('200')
+  await page.waitForSelector('text=a page across', { timeout: 20000 }).catch(() => {})
+  const suggestion = await page.locator('main').innerText()
+  const offered = /Use ([\d.]+)\s*(KB|MB)/.exec(suggestion)
+  const offeredBytes = offered
+    ? Number(offered[1]) * (offered[2] === 'MB' ? 1024 * 1024 : 1024)
+    : 0
+  check(
+    'A suggested limit is a real compression, never the file it started as',
+    offered === null || (offeredBytes > 0 && offeredBytes <= 0.81 * longTextBytes),
+    offered
+      ? `offered ${offered[0]} against a ${Math.round(longTextBytes / 1024)} KB file`
+      : 'no suggestion offered',
   )
 
   // ---- A squeezed target says so before the work, not after ----
@@ -1123,7 +1229,12 @@ async function main() {
     // An A4 page is 8.27in wide, so width in pixels / 8.27 is the DPI.
     const dpi = widest / 8.27
     console.log(`      scanned page rendered at ${widest}x${tallest} px (~${dpi.toFixed(0)} DPI)`)
-    check('Scanned text keeps a readable resolution', dpi >= 110, `${dpi.toFixed(0)} DPI at ${widest}x${tallest}`)
+    // 90, not the 110 this asserted before the reserve band existed. The floor
+    // moved by decision, not by accident: a limit the user sets is now reached
+    // where it can be, and 90 DPI is where the compressor still stops. What
+    // this check is really for is unchanged — the floor is enforced, and the
+    // check above proves the shortfall is admitted rather than hidden.
+    check('Scanned text keeps a readable resolution', dpi >= 88, `${dpi.toFixed(0)} DPI at ${widest}x${tallest}`)
   }
 
   // ---- Long text document: must bail out fast, not grind through 300 pages ----
@@ -1262,6 +1373,16 @@ async function main() {
   await page.waitForSelector('text=Maximum size', { timeout: 10000 })
   const pdfFromExam = await page.locator('header').innerText()
   check('A PDF picked from the exam route keeps the exam’s name', pdfFromExam.includes('SSC CGL') && pdfFromExam.includes('test-doc-heavy.pdf'))
+  // "Any other document" is the one PDF route that states no size — it exists
+  // precisely for the forms the app has no numbers for — so it gets the same
+  // empty field as picking the tool directly, rather than a number invented to
+  // fill the space.
+  const openEndedLimit = await page.locator('input[aria-label^="Maximum size"]').inputValue()
+  check(
+    'A PDF route with no stated limit asks rather than inventing one',
+    openEndedLimit === '',
+    `field read ${JSON.stringify(openEndedLimit)}`,
+  )
 
   // ---- The stated floor is remembered, not reinvented ----
   // Reported from the device: UPSC presets 20 KB, and unticking then re-ticking
@@ -1336,6 +1457,22 @@ async function main() {
   const customDetail = await page.locator('main').innerText()
   check('A saved exam opens like a built-in one', customDetail.includes('300×400 px') && customDetail.includes('≤ 80 KB'), customDetail.slice(0, 60).replace(/\n/g, ' '))
   check('Its PDF row carries a size but no pixels', /Document \(PDF\)/.test(customDetail) && /500 KB/.test(customDetail))
+  // The one case where a limit is still filled in for the user: it is the
+  // number they recorded on their own exam, not the app guessing at one.
+  await page.locator('button:has-text("Document (PDF)")').first().click()
+  await page.waitForSelector('text=Reduce PDF size')
+  await pickFile(page, () => page.locator('button:has-text("Select PDF")').click(), [
+    `${A}/test-doc-heavy.pdf`,
+  ])
+  await page.waitForSelector('text=Maximum size', { timeout: 15000 })
+  const statedLimit = await page.locator('input[aria-label^="Maximum size"]').inputValue()
+  check(
+    'A limit the exam states does arrive filled in',
+    statedLimit === '500',
+    `field read ${JSON.stringify(statedLimit)}`,
+  )
+  await page.goBack()
+  await page.waitForSelector('text=documents to prepare')
 
   // it survives a reload, and it is searchable
   await openTool(page, 'gov-exams')

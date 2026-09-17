@@ -391,6 +391,13 @@ export interface CompressPdfResult {
   notWorthRasterising?: boolean
   /** The pages are scanned text and going smaller would have blurred the words. */
   stoppedForLegibility?: boolean
+  /**
+   * The limit could only be reached by rendering scanned text below the
+   * resolution it is comfortable at, so the words will look soft. Worth saying
+   * plainly: the user asked for a number and got it, and should know the price
+   * rather than discovering it when they open the file.
+   */
+  belowReadableBand?: boolean
   /** The work was measured to cost far more time than the saving was worth. */
   notWorthTheTime?: { minutes: number; savingPercent: number }
   /**
@@ -570,9 +577,27 @@ const MAX_QUALITY = 0.82
  * stops rather than handing back a page nobody can read.
  */
 interface RenderLimits {
+  /**
+   * The comfortable floor: as low as this goes on its own initiative.
+   *
+   * Everything that chooses settings speculatively — calibration, and `grow`
+   * spending spare allowance — stops here. Only `shrink`, which moves solely
+   * on a measured overshoot, may go past it and into the reserve below.
+   */
   minScale: number
   maxScale: number
   minQuality: number
+  /**
+   * The reserve, spent only to reach a limit the user actually set.
+   *
+   * A 707-page scan asked for 43 MB came back at 50 with "120 DPI, quality
+   * 0.41" — the comfortable floor exactly. It had the resolution to reach the
+   * limit and was refusing to spend it, so the user got neither their number
+   * nor a say in the matter. Now the floor is where it stops looking on its
+   * own, and this is where it stops when asked directly.
+   */
+  reserveMinScale: number
+  reserveMinQuality: number
   maxPixels: number
   /** The pages are scans of text, so legibility sets the floor. */
   text: boolean
@@ -582,6 +607,8 @@ const PHOTO_LIMITS: RenderLimits = {
   minScale: 0.45,
   maxScale: 1.6,
   minQuality: 0.3,
+  reserveMinScale: 0.3,
+  reserveMinQuality: 0.22,
   maxPixels: 1_600_000,
   text: false,
 }
@@ -600,6 +627,11 @@ const TEXT_LIMITS: RenderLimits = {
   minScale: 120 / 72,
   maxScale: 175 / 72,
   minQuality: 0.4,
+  // 90 DPI is poor and the app says so on the result, but the words are still
+  // words. Below it a scan stops carrying text at all, which is why the
+  // compressor still gives up there rather than handing back grey mush.
+  reserveMinScale: 90 / 72,
+  reserveMinQuality: 0.3,
   maxPixels: 3_000_000,
   text: true,
 }
@@ -692,6 +724,17 @@ const ASSEMBLE_BASE = 0.2
 const ASSEMBLE_SPAN = 0.6
 const REFINE_BASE = 0.8
 const REFINE_SPAN = 0.19
+
+/**
+ * How many corrective passes the compressor may make before settling.
+ *
+ * Each one re-renders the whole document, so this is not free, and the loop
+ * stops the moment it is either under the limit or out of lever. Three is
+ * enough for the model in `shrink` to converge on a large miss — it treats
+ * JPEG size as linear in quality and square in resolution, which is close
+ * enough to halve the error each time but not to land in one step.
+ */
+const REFINE_ATTEMPTS = 3
 
 /** Rough JPEG cost per pixel, used only to pick a starting resolution. */
 const BYTES_PER_PIXEL_GUESS = 0.2
@@ -921,34 +964,50 @@ export async function compressPdf(
     })
     throwIfAborted(signal)
 
-    // A second pass means rendering every page again, so it has to earn its
-    // place: only when the miss is big enough to matter and the settings still
-    // have somewhere to go. And if it fails or is cancelled, the first pass is
-    // still a real result — losing it to an error would be absurd.
-    const overshoot = best.byteLength / maxBytes
-    if (overshoot > REFINE_THRESHOLD) {
-      const corrected = shrink(settings, overshoot, limits)
-      if (corrected.scale !== settings.scale || corrected.quality !== settings.quality) {
-        try {
-          const retry = await assemble(renderDoc, srcDoc, plan, corrected, limits, {
-            onProgress,
-            signal,
-            pageCount,
-            phase: 'refining',
-            baseFraction: REFINE_BASE,
-            span: REFINE_SPAN,
-            priorMsPerPage: projection.msPerPage,
-          })
-          if (retry.byteLength < best.byteLength) {
-            best = retry
-            // The pages that survived were rendered with these, not the first
-            // pass's, so these are what the result should report.
-            used = corrected
-          }
-        } catch (e) {
-          if (isCancellation(e) || e instanceof PdfNeedsDomError) throw e
-          // Keep the first pass rather than failing the whole job.
+    // Each further pass means rendering every page again, so it has to earn
+    // its place: only while the miss still matters and the settings still have
+    // somewhere to go. And if one fails or is cancelled, the passes already
+    // done are still a real result — losing them to an error would be absurd.
+    //
+    // It loops rather than correcting once because one step is not always
+    // enough. `shrink` models JPEG size as linear in quality and square in
+    // resolution, which is close but not exact, so a large miss lands nearer
+    // the limit without landing under it. Stopping there was how a 37 MB scan
+    // asked for 8 MB came back at 16: the levers had plenty left, and nothing
+    // asked them a second time.
+    // Two settings are tracked, and conflating them would misreport the result:
+    // `used` is what produced the output being kept, so it is what the details
+    // line describes, while `last` is simply the most recent thing tried and is
+    // what the next correction has to be measured against.
+    let last = settings
+    let lastBytes = best.byteLength
+    for (let attempt = 0; attempt < REFINE_ATTEMPTS; attempt++) {
+      if (best.byteLength / maxBytes <= REFINE_THRESHOLD) break
+      const corrected = shrink(last, lastBytes / maxBytes, limits)
+      if (corrected.scale === last.scale && corrected.quality === last.quality) break
+      try {
+        const span = REFINE_SPAN / REFINE_ATTEMPTS
+        const retry = await assemble(renderDoc, srcDoc, plan, corrected, limits, {
+          onProgress,
+          signal,
+          pageCount,
+          phase: 'refining',
+          baseFraction: REFINE_BASE + span * attempt,
+          span,
+          priorMsPerPage: projection.msPerPage,
+        })
+        last = corrected
+        lastBytes = retry.byteLength
+        if (retry.byteLength < best.byteLength) {
+          // The pages that survived were rendered with these, not the previous
+          // pass's, so these are what the result should report.
+          best = retry
+          used = corrected
         }
+      } catch (e) {
+        if (isCancellation(e) || e instanceof PdfNeedsDomError) throw e
+        // Keep what we have rather than failing the whole job.
+        break
       }
     }
 
@@ -975,6 +1034,7 @@ export async function compressPdf(
       rasterisedPages: rasterCount,
       copiedPages: pageCount - rasterCount,
       stoppedForLegibility: limits.text && best.byteLength > maxBytes,
+      belowReadableBand: limits.text && used.scale < limits.minScale,
       // pdf.js scale 1 is 72 DPI, so this is the resolution in plain terms.
       dpi: Math.round(used.scale * 72),
       quality: Math.round(used.quality * 100) / 100,
@@ -1003,15 +1063,25 @@ function shrink(
   overshoot: number,
   limits: RenderLimits,
 ): { scale: number; quality: number } {
-  const factor = Math.sqrt(overshoot)
-  // On text, resolution does not move. Every correction comes out of quality,
-  // and stops at the floor rather than dissolving the letters.
-  const scale = limits.text
-    ? settings.scale
-    : clamp(settings.scale / Math.sqrt(factor), limits.minScale, limits.maxScale)
+  if (!limits.text) {
+    const factor = Math.sqrt(overshoot)
+    return {
+      scale: clamp(settings.scale / Math.sqrt(factor), limits.reserveMinScale, limits.maxScale),
+      quality: clamp(settings.quality / factor, limits.reserveMinQuality, MAX_QUALITY),
+    }
+  }
+
+  // On text the two levers are not interchangeable, so they are not spent
+  // evenly. Quality goes first and goes all the way: a scan tolerates JPEG
+  // damage far better than it tolerates losing the pixels the strokes are made
+  // of. Only what quality could not absorb comes out of resolution, which is
+  // why a page is never softened while quality still had somewhere to go.
+  const quality = clamp(settings.quality / overshoot, limits.reserveMinQuality, MAX_QUALITY)
+  const taken = settings.quality / quality
+  const left = Math.max(1, overshoot / taken)
   return {
-    scale,
-    quality: clamp(settings.quality / factor, limits.minQuality, MAX_QUALITY),
+    scale: clamp(settings.scale / Math.sqrt(left), limits.reserveMinScale, limits.maxScale),
+    quality,
   }
 }
 

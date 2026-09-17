@@ -44,6 +44,14 @@ const SOFT_PAGE_BYTES = 100 * 1024
 const HARSH_PAGE_BYTES = 45 * 1024
 const COMFORTABLE_PAGE_BYTES = 150 * 1024
 
+/**
+ * The most of the original a suggested limit may be.
+ *
+ * A suggestion that lands at or near the file's own size is not a suggestion,
+ * it is a refusal to do the job the user opened the tool for.
+ */
+const ROOMY_CEILING = 0.8
+
 function formatEta(seconds: number): string {
   if (seconds < 5) return 'almost done'
   if (seconds < 60) return `about ${seconds}s left`
@@ -63,7 +71,19 @@ export function CompressPdf() {
   // spread across the pages it has to cover: 5 MB is generous for four pages
   // and starvation for four hundred.
   const [pageCount, setPageCount] = useState<number | null>(null)
-  const [targetBytes, setTargetBytes] = useState(500 * 1024)
+  // Null until the user says. The screen used to open with half the file size
+  // filled in and then warn, underneath, that half the file size was too small
+  // for this many pages — the app proposing a number and immediately arguing
+  // with it. It asks instead.
+  const [targetBytes, setTargetBytes] = useState<number | null>(null)
+  /**
+   * The limit the finished run was actually given.
+   *
+   * Kept apart from the field because the field is still editable while a
+   * result is on screen: reading the live value would let a stray tap relabel
+   * a finished job against a limit it never saw.
+   */
+  const [ranAgainst, setRanAgainst] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<CompressProgress | null>(null)
   const [result, setResult] = useState<CompressPdfResult | null>(null)
@@ -72,7 +92,7 @@ export function CompressPdf() {
 
   // Everything the user could get wrong, caught before any work happens.
   const issue = useMemo(() => {
-    if (!file) return null
+    if (!file || targetBytes === null) return null
     if (targetBytes < MIN_TARGET_BYTES) {
       return {
         title: 'That target is too small',
@@ -95,10 +115,16 @@ export function CompressPdf() {
   // Not an error, so it never blocks the button: a squeezed document is still
   // often exactly what the user wants. It just should not be a surprise.
   const warning = useMemo(() => {
-    if (!file || issue || !pageCount) return null
+    if (!file || issue || !pageCount || targetBytes === null) return null
     const perPage = targetBytes / pageCount
     if (perPage >= SOFT_PAGE_BYTES) return null
-    const roomy = Math.min(file.size, Math.round(COMFORTABLE_PAGE_BYTES * pageCount))
+    // A suggested limit has to be a real compression or it has no business
+    // being offered. This used to be clamped to the file's own size, so on any
+    // document long enough to trip the warning — 150 KB x 707 pages is 106 MB,
+    // clamped to an 86 MB file — the button read "Use 86 MB" and meant "do not
+    // compress this at all". Where there is no roomier limit that still leaves
+    // the file meaningfully smaller, the notice now carries no button.
+    const roomy = Math.round(Math.min(ROOMY_CEILING * file.size, COMFORTABLE_PAGE_BYTES * pageCount))
     return {
       perPage: Math.round(perPage),
       severe: perPage < HARSH_PAGE_BYTES,
@@ -121,20 +147,19 @@ export function CompressPdf() {
     void getPageCount(picked)
       .then(setPageCount)
       .catch(() => setPageCount(null))
-    // The limit the form states, when we were told one and the file is over
-    // it. Otherwise half the original: a sane starting point that is never
-    // immediately invalid.
+    // The limit the form states, where we were told one and the file is over
+    // it. That is the exam's own number rather than a guess, so it is worth
+    // filling in. Otherwise nothing: only the user knows what they need.
     setTargetBytes(
-      askedBytes && askedBytes < picked.size
-        ? Math.max(MIN_TARGET_BYTES, askedBytes)
-        : Math.max(MIN_TARGET_BYTES, Math.round(picked.size / 2)),
+      askedBytes && askedBytes < picked.size ? Math.max(MIN_TARGET_BYTES, askedBytes) : null,
     )
     setStep('setup')
   }
 
   async function process() {
-    if (!file || issue) return
+    if (!file || issue || targetBytes === null) return
     setProgress(null)
+    setRanAgainst(targetBytes)
     setStep('working')
     // Asked here rather than on first launch, so the request arrives with an
     // obvious reason attached to it.
@@ -238,8 +263,19 @@ export function CompressPdf() {
                 Maximum size
               </span>
               <div className="mt-1.5">
-                <SizeField bytes={targetBytes} onChange={setTargetBytes} invalid={!!issue} />
+                <SizeField
+                  bytes={targetBytes}
+                  onChange={setTargetBytes}
+                  onEmpty={() => setTargetBytes(null)}
+                  invalid={!!issue}
+                  defaultUnit={file && file.size >= 1024 * 1024 ? 'MB' : 'KB'}
+                />
               </div>
+              {targetBytes === null && (
+                <p className="mt-1.5 text-xs text-[var(--ink-2)]">
+                  Type the limit your form states, or tap one below.
+                </p>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -285,7 +321,7 @@ export function CompressPdf() {
               sharp and selectable.
             </p>
 
-            <Button fullWidth disabled={!!issue} onClick={process}>
+            <Button fullWidth disabled={!!issue || targetBytes === null} onClick={process}>
               Compress PDF
             </Button>
           </>
@@ -296,7 +332,7 @@ export function CompressPdf() {
             label={progress ? PHASE_LABEL[progress.phase] : 'Reading the file'}
             fraction={progress?.fraction}
             currentBytes={progress?.phase === 'compressing' ? progress.bytesSoFar : undefined}
-            targetBytes={targetBytes}
+            targetBytes={targetBytes ?? undefined}
             detail={progressDetail}
             onCancel={() => cancelRef.current?.()}
           />
@@ -319,23 +355,32 @@ export function CompressPdf() {
             summary={savedPercent > 0 ? `${savedPercent}% smaller` : 'Compressed'}
             checks={[
               {
-                label: result.metTarget ? `Under ${formatBytes(targetBytes)}` : `Target ${formatBytes(targetBytes)}`,
+                label: result.metTarget ? `Under ${formatBytes(ranAgainst)}` : `Target ${formatBytes(ranAgainst)}`,
                 ok: result.metTarget,
               },
               ...(result.copiedPages > 0
                 ? [{ label: `${result.copiedPages} text pages kept sharp`, ok: true }]
                 : []),
             ]}
+            /*
+              One short sentence saying what happened, and no homework. These
+              used to end by telling the user to go away and split the document
+              up themselves, which is a chore to perform by hand and, on a file
+              this long, would not have helped: the pages weigh what they weigh
+              whether they arrive in one file or six.
+            */
             warning={
               result.metTarget
-                ? undefined
+                ? result.belowReadableBand
+                  ? 'Your limit needed a lower resolution than these scans are comfortable at, so the words will look soft. Raise the limit if the text matters more than the size.'
+                  : undefined
                 : result.notWorthTheTime
-                  ? `Re-encoding these ${result.copiedPages} pages would have taken about ${result.notWorthTheTime.minutes} minutes on this phone and saved only ${result.notWorthTheTime.savingPercent}%, so it was left alone. This file is already stored efficiently. To get a real reduction, split it into fewer pages and compress those.`
+                  ? `Re-encoding these ${result.copiedPages} pages would have taken about ${result.notWorthTheTime.minutes} minutes on this phone and saved only ${result.notWorthTheTime.savingPercent}%, so it was left alone. This file is already stored efficiently.`
                   : result.notWorthRasterising
-                  ? `This PDF is mostly text and is already packed efficiently. Re-encoding its ${result.copiedPages} pages would have made it larger, not smaller, so it was left as it is. To get under ${formatBytes(targetBytes)}, split it into fewer pages instead.`
-                  : result.stoppedForLegibility
-                    ? `These pages are scans of text. Squeezing them under ${formatBytes(targetBytes)} would have meant dropping the resolution until the words blurred, so it stopped at ${formatBytes(result.finalBytes)} and kept them readable. To go smaller, split the document into fewer pages.`
-                    : `This PDF couldn't go under ${formatBytes(targetBytes)} without becoming unreadable. Try a higher limit, or split it into fewer pages first.`
+                    ? `This PDF is mostly text and is already packed efficiently. Re-encoding its ${result.copiedPages} pages would have made it larger, not smaller, so it was left as it is.`
+                    : result.stoppedForLegibility
+                      ? `At ${formatBytes(ranAgainst)} these scanned pages would no longer be readable, so it stopped at ${formatBytes(result.finalBytes)}.`
+                      : `This PDF couldn't reach ${formatBytes(ranAgainst)} and stay readable, so it stopped at ${formatBytes(result.finalBytes)}.`
             }
             onStartOver={reset}
             startOverLabel="Another PDF"
@@ -353,7 +398,7 @@ export function CompressPdf() {
             {result.method === 'rasterised' && result.dpi
               ? `${result.rasterisedPages} pages re-encoded at ${result.dpi} DPI, quality ${result.quality} · `
               : `${result.method} · `}
-            {Math.round((result.finalBytes / targetBytes) * 100)}% of the {formatBytes(targetBytes)} limit
+            {Math.round((result.finalBytes / ranAgainst) * 100)}% of the {formatBytes(ranAgainst)} limit
           </p>
         )}
       </main>

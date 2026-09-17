@@ -1,8 +1,17 @@
 import { useState } from 'react'
 
 interface Props {
-  value: number
+  value: number | null
   onChange: (value: number) => void
+  /**
+   * Makes empty a state the field can rest in rather than one it corrects.
+   *
+   * Without it, clearing the field snaps to the minimum on blur, which is
+   * right where a number is always required. Where the screen would rather ask
+   * than assume — Compress PDF no longer guesses a limit — a blank field has
+   * to survive being left blank. Callers that do not pass this are unaffected.
+   */
+  onEmpty?: () => void
   min?: number
   max?: number
   decimals?: boolean
@@ -23,6 +32,7 @@ interface Props {
 export function NumberField({
   value,
   onChange,
+  onEmpty,
   min = 0,
   max = Number.MAX_SAFE_INTEGER,
   decimals = false,
@@ -30,7 +40,7 @@ export function NumberField({
   ariaLabel,
   className = '',
 }: Props) {
-  const [text, setText] = useState(String(value))
+  const [text, setText] = useState(value === null ? '' : String(value))
   const [editing, setEditing] = useState(false)
   const [lastValue, setLastValue] = useState(value)
 
@@ -38,7 +48,7 @@ export function NumberField({
   // is mid-edit, where overwriting their keystrokes would be maddening.
   if (!editing && value !== lastValue) {
     setLastValue(value)
-    setText(String(value))
+    setText(value === null ? '' : String(value))
   }
 
   return (
@@ -55,13 +65,20 @@ export function NumberField({
           ? e.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1')
           : e.target.value.replace(/\D/g, '')
         setText(cleaned)
-        if (cleaned !== '' && cleaned !== '.') {
-          const parsed = Number(cleaned)
-          if (Number.isFinite(parsed)) onChange(parsed)
+        if (cleaned === '' || cleaned === '.') {
+          onEmpty?.()
+          return
         }
+        const parsed = Number(cleaned)
+        if (Number.isFinite(parsed)) onChange(parsed)
       }}
       onBlur={() => {
         setEditing(false)
+        if (onEmpty && (text === '' || text === '.')) {
+          setText('')
+          onEmpty()
+          return
+        }
         const parsed = text === '' || text === '.' ? min : Number(text)
         const clamped = Math.min(max, Math.max(min, Number.isFinite(parsed) ? parsed : min))
         const rounded = decimals ? Math.round(clamped * 100) / 100 : Math.round(clamped)

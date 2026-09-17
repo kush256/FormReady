@@ -5,11 +5,15 @@ const KB = 1024
 const MB = 1024 * 1024
 
 interface Props {
-  bytes: number
+  bytes: number | null
   onChange: (bytes: number) => void
+  /** Passed through to allow a genuinely empty field. See `NumberField`. */
+  onEmpty?: () => void
   invalid?: boolean
   /** Distinguishes two size fields on one screen, for screen readers and tests. */
   label?: string
+  /** Which unit to start in when there is no value to infer one from. */
+  defaultUnit?: 'KB' | 'MB'
 }
 
 /**
@@ -17,10 +21,19 @@ interface Props {
  * and asking someone to convert "5 MB" into 5120 by hand is a good way to get
  * a wrong number typed.
  */
-export function SizeField({ bytes, onChange, invalid, label = 'Maximum size' }: Props) {
-  const [unit, setUnit] = useState<'KB' | 'MB'>(bytes >= MB ? 'MB' : 'KB')
+export function SizeField({
+  bytes,
+  onChange,
+  onEmpty,
+  invalid,
+  label = 'Maximum size',
+  defaultUnit,
+}: Props) {
+  const [unit, setUnit] = useState<'KB' | 'MB'>(
+    bytes === null ? (defaultUnit ?? 'KB') : bytes >= MB ? 'MB' : 'KB',
+  )
   const divisor = unit === 'MB' ? MB : KB
-  const shown = Math.round((bytes / divisor) * 100) / 100
+  const shown = bytes === null ? null : Math.round((bytes / divisor) * 100) / 100
 
   function switchTo(next: 'KB' | 'MB') {
     setUnit(next)
@@ -31,6 +44,7 @@ export function SizeField({ bytes, onChange, invalid, label = 'Maximum size' }: 
       <NumberField
         value={shown}
         onChange={(v) => onChange(Math.round(v * divisor))}
+        onEmpty={onEmpty}
         min={0}
         decimals={unit === 'MB'}
         invalid={invalid}
